@@ -307,6 +307,7 @@ set(EXEC_FILES
         ./types/type_checker_xml_loader_test.cpp 
         ./column/simd_selector_test.cpp
         ./column/simd_mulselector_test.cpp
+        ./util/fsst_encoding_test.cpp
         ./util/block_compression_test.cpp
         ./util/brpc_stub_cache_test.cpp
         ./util/byte_buffer_test.cpp
@@ -502,6 +503,7 @@ SET(DW_TEST_FILES
     ./storage/rowset/data_sample_test.cpp
     ./storage/rowset/default_value_column_iterator_test.cpp
     ./storage/rowset/dict_page_test.cpp
+    ./storage/rowset/fsst_page_test.cpp
     ./storage/rowset/encoding_info_test.cpp
     ./storage/rowset/flat_json_column_compact_test.cpp
     ./storage/rowset/flat_json_column_rw_test.cpp

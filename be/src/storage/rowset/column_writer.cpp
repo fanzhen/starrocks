@@ -66,6 +66,8 @@
 #include "storage/rowset/struct_column_writer.h"
 #include "storage/rowset/zone_map_index.h"
 #include "types/logical_type.h"
+#include "storage/rowset/fsst_page.h"
+#include "util/fsst_encoding.h"
 #include "util/bloom_filter.h"
 #include "util/compression/block_compression.h"
 
@@ -261,9 +263,15 @@ public:
     Status check_string_lengths(const Column& column);
 
 private:
+    void _build_column_fsst_symbol_table(const BinaryColumn& bin_col);
+
     std::unique_ptr<ScalarColumnWriter> _scalar_column_writer;
+    ColumnMetaPB* _meta;
     bool _is_speculated = false;
     MutableColumnPtr _buf_column = nullptr;
+    bool _enable_fsst_encoding = false;
+    fsst_detail::SymbolTable _column_fsst_symbol_table;
+    bool _has_column_fsst_symbol_table{false};
 };
 
 class DictColumnWriter final : public ColumnWriter {
@@ -847,7 +855,9 @@ Status ScalarColumnWriter::_append(const uint8_t* data, const uint8_t* null_flag
 StringColumnWriter::StringColumnWriter(const ColumnWriterOptions& opts, TypeInfoPtr type_info,
                                        std::unique_ptr<ScalarColumnWriter> column_writer)
         : ColumnWriter(std::move(type_info), opts.meta->length(), opts.meta->is_nullable()),
-          _scalar_column_writer(std::move(column_writer)) {}
+          _scalar_column_writer(std::move(column_writer)),
+          _meta(opts.meta),
+          _enable_fsst_encoding(opts.enable_fsst_encoding) {}
 
 Status StringColumnWriter::append(const Column& column) {
     if (config::enable_check_string_lengths) {
@@ -887,17 +897,36 @@ Status StringColumnWriter::append(const Column& column) {
 
 inline void StringColumnWriter::speculate_column_and_set_encoding(const Column& column) {
     Status st;
+    EncodingTypePB detect_encoding = PLAIN_ENCODING;
+    const BinaryColumn* bin_col_ptr = nullptr;
+
     if (column.is_nullable()) {
         const auto& data_col = down_cast<const NullableColumn&>(column).data_column();
-        const auto& bin_col = down_cast<const BinaryColumn&>(*data_col);
-        const auto detect_encoding = speculate_string_encoding(bin_col);
+        bin_col_ptr = &down_cast<const BinaryColumn&>(*data_col);
+        detect_encoding = speculate_string_encoding(*bin_col_ptr);
         st = _scalar_column_writer->set_encoding(detect_encoding);
     } else if (column.is_binary()) {
-        const auto& bin_col = down_cast<const BinaryColumn&>(column);
-        auto detect_encoding = speculate_string_encoding(bin_col);
+        bin_col_ptr = &down_cast<const BinaryColumn&>(column);
+        detect_encoding = speculate_string_encoding(*bin_col_ptr);
         st = _scalar_column_writer->set_encoding(detect_encoding);
     }
     CHECK(st.ok()) << st;
+
+    // For FSST encoding, build column-level symbol table and pass to page builder
+    if (detect_encoding == FSST_ENCODING && bin_col_ptr != nullptr) {
+        _build_column_fsst_symbol_table(*bin_col_ptr);
+        auto* page_builder = _scalar_column_writer->page_builder();
+        // Try TYPE_VARCHAR first, then TYPE_CHAR
+        auto* pb_varchar = dynamic_cast<FSSTPageBuilder<TYPE_VARCHAR>*>(page_builder);
+        if (pb_varchar != nullptr) {
+            pb_varchar->set_symbol_table(&_column_fsst_symbol_table);
+        } else {
+            auto* pb_char = dynamic_cast<FSSTPageBuilder<TYPE_CHAR>*>(page_builder);
+            if (pb_char != nullptr) {
+                pb_char->set_symbol_table(&_column_fsst_symbol_table);
+            }
+        }
+    }
 }
 
 inline EncodingTypePB StringColumnWriter::speculate_string_encoding(const BinaryColumn& bin_col) {
@@ -911,6 +940,13 @@ inline EncodingTypePB StringColumnWriter::speculate_string_encoding(const Binary
             size_t hash = SliceHash()(bin_col.get_slice(i));
             hash_set.insert(hash);
             if (hash_set.size() > max_card) {
+                // High cardinality: try FSST if enabled
+                if (_enable_fsst_encoding) {
+                    double fsst_ratio = fsst_detail::estimate_compression_ratio(bin_col);
+                    if (fsst_ratio < 0.7) {
+                        return FSST_ENCODING;
+                    }
+                }
                 return PLAIN_ENCODING;
             }
         }
@@ -919,19 +955,34 @@ inline EncodingTypePB StringColumnWriter::speculate_string_encoding(const Binary
     return DICT_ENCODING;
 }
 
+void StringColumnWriter::_build_column_fsst_symbol_table(const BinaryColumn& bin_col) {
+    std::vector<std::pair<const uint8_t*, size_t>> string_ptrs;
+    string_ptrs.reserve(bin_col.size());
+    for (size_t i = 0; i < bin_col.size(); ++i) {
+        auto slice = bin_col.get_slice(i);
+        string_ptrs.emplace_back(reinterpret_cast<const uint8_t*>(slice.data), slice.size);
+    }
+    _column_fsst_symbol_table = fsst_detail::build_symbol_table(string_ptrs);
+    _has_column_fsst_symbol_table = true;
+}
+
 Status StringColumnWriter::finish() {
-    if (_is_speculated) {
-        return _scalar_column_writer->finish();
+    if (!_is_speculated) {
+        _is_speculated = true;
+        if (_buf_column != nullptr) {
+            speculate_column_and_set_encoding(*_buf_column);
+            Status st = _scalar_column_writer->append(*_buf_column);
+            _buf_column.reset();
+            if (!st.ok()) {
+                return st;
+            }
+        }
     }
 
-    _is_speculated = true;
-    if (_buf_column != nullptr) {
-        speculate_column_and_set_encoding(*_buf_column);
-        Status st = _scalar_column_writer->append(*_buf_column);
-        _buf_column.reset();
-        if (!st.ok()) {
-            return st;
-        }
+    // Write column-level FSST symbol table to column metadata
+    if (_has_column_fsst_symbol_table) {
+        std::string serialized = _column_fsst_symbol_table.serialize();
+        _meta->set_fsst_symbol_table(serialized);
     }
 
     return _scalar_column_writer->finish();

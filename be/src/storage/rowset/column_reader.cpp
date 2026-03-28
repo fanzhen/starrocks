@@ -163,6 +163,10 @@ Status ColumnReader::_init(ColumnMetaPB* meta, const TabletColumn* column) {
         RETURN_IF_ERROR(EncodingInfo::get(delegate_type(_column_type), meta->encoding(), &_encoding_info));
         RETURN_IF_ERROR(get_block_compression_codec(meta->compression(), &_compress_codec));
 
+        if (meta->has_fsst_symbol_table() && !meta->fsst_symbol_table().empty()) {
+            _fsst_symbol_table_data = meta->fsst_symbol_table();
+        }
+
         for (int i = 0; i < meta->indexes_size(); i++) {
             auto* index_meta = meta->mutable_indexes(i);
             switch (index_meta->type()) {

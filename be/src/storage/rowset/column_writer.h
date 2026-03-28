@@ -98,6 +98,7 @@ struct ColumnWriterOptions {
 
     bool is_compaction = false;
     bool need_flat = false;
+    bool enable_fsst_encoding = false;
 
     std::string field_name;
     const FlatJsonConfig* flat_json_config = nullptr;
@@ -240,6 +241,8 @@ public:
     bool is_global_dict_valid() override { return _is_global_dict_valid; }
 
     uint64_t total_mem_footprint() const override { return _total_mem_footprint; }
+
+    PageBuilder* page_builder() { return _page_builder.get(); }
 
 private:
     // All Pages will be organized into a linked list

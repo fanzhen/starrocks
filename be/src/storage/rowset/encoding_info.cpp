@@ -45,6 +45,7 @@
 #include "storage/rowset/binary_prefix_page.h"
 #include "storage/rowset/bitshuffle_page.h"
 #include "storage/rowset/dict_page.h"
+#include "storage/rowset/fsst_page.h"
 #include "storage/rowset/frame_of_reference_page.h"
 #include "storage/rowset/plain_page.h"
 #include "storage/rowset/rle_page.h"
@@ -164,6 +165,18 @@ struct TypeEncodingTraits<type, FOR_ENCODING, CppType,
 };
 
 template <LogicalType type>
+struct TypeEncodingTraits<type, FSST_ENCODING, Slice> {
+    static Status create_page_builder(const PageBuilderOptions& opts, PageBuilder** builder) {
+        *builder = new FSSTPageBuilder<type>(opts);
+        return Status::OK();
+    }
+    static Status create_page_decoder(const Slice& data, PageDecoder** decoder) {
+        *decoder = new FSSTPageDecoder<type>(data);
+        return Status::OK();
+    }
+};
+
+template <LogicalType type>
 struct TypeEncodingTraits<type, PREFIX_ENCODING, Slice> {
     static Status create_page_builder(const PageBuilderOptions& opts, PageBuilder** builder) {
         *builder = new BinaryPrefixPageBuilder(opts);
@@ -268,10 +281,12 @@ EncodingInfoResolver::EncodingInfoResolver() {
     _add_map<TYPE_CHAR, DICT_ENCODING>();
     _add_map<TYPE_CHAR, PLAIN_ENCODING>();
     _add_map<TYPE_CHAR, PREFIX_ENCODING, true>();
+    _add_map<TYPE_CHAR, FSST_ENCODING>();
 
     _add_map<TYPE_VARCHAR, DICT_ENCODING>();
     _add_map<TYPE_VARCHAR, PLAIN_ENCODING>();
     _add_map<TYPE_VARCHAR, PREFIX_ENCODING, true>();
+    _add_map<TYPE_VARCHAR, FSST_ENCODING>();
 
     _add_map<TYPE_BOOLEAN, RLE>();
     _add_map<TYPE_BOOLEAN, BIT_SHUFFLE>();

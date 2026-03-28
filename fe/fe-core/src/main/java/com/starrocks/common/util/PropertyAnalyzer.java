@@ -158,6 +158,8 @@ public class PropertyAnalyzer {
 
     public static final String PROPERTIES_ENABLE_PERSISTENT_INDEX = "enable_persistent_index";
 
+    public static final String PROPERTIES_ENABLE_FSST_ENCODING = "enable_fsst_encoding";
+
     public static final String PROPERTIES_LABELS_LOCATION = "labels.location";
 
     public static final String PROPERTIES_PERSISTENT_INDEX_TYPE = "persistent_index_type";

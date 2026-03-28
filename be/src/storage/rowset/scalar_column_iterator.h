@@ -34,12 +34,15 @@
 
 #pragma once
 
+#include <memory>
+
 #include "column/fixed_length_column.h"
 #include "storage/range.h"
 #include "storage/rowset/column_iterator.h"
 #include "storage/rowset/ordinal_page_index.h"
 #include "storage/rowset/page_handle.h"
 #include "storage/rowset/parsed_page.h"
+#include "util/fsst_encoding.h"
 
 namespace starrocks {
 
@@ -80,6 +83,9 @@ public:
     bool has_ngram_bloom_filter_index() const override;
     Status get_row_ranges_by_bloom_filter(const std::vector<const ColumnPredicate*>& predicates,
                                           SparseRange<>* range) override;
+
+    Status get_row_ranges_by_compressed_encoding(const std::vector<const ColumnPredicate*>& predicates,
+                                                  SparseRange<>* row_ranges) override;
 
     bool all_page_dict_encoded() const override { return _all_dict_encoded; }
 
@@ -156,6 +162,11 @@ private:
     template <LogicalType Type>
     Status _load_dict_page();
 
+    Status _load_fsst_symbol_table();
+
+    template <LogicalType Type>
+    Status _do_init_fsst_decoder();
+
     bool _contains_deleted_row(uint32_t page_index) const;
 
     template <typename ReadFunc>
@@ -189,6 +200,12 @@ private:
     Status (ScalarColumnIterator::*_init_dict_decoder_func)() = nullptr;
 
     Status (ScalarColumnIterator::*_fetch_all_dict_words_func)(std::vector<Slice>* words) const = nullptr;
+
+    Status (ScalarColumnIterator::*_init_fsst_decoder_func)() = nullptr;
+    std::unique_ptr<fsst_detail::SymbolTable> _fsst_symbol_table;
+    // Cached encoded predicate for FSST EQ queries — persists across pages.
+    std::string _fsst_cached_encoded_pred;
+    std::string _fsst_cached_pred_raw;
 
     // whether all data pages are dict-encoded.
     bool _all_dict_encoded = false;

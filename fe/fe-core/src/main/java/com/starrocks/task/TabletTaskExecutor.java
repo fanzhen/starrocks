@@ -253,6 +253,7 @@ public class TabletTaskExecutor {
                 .setBloomFilterFpp(table.getBfFpp())
                 .addColumns(indexMeta.getSchema())
                 .setPrimaryKeyEncodingType(table.getPrimaryKeyEncodingType())
+                .setEnableFsstEncoding(table.enableFsstEncoding())
                 .build().toTabletSchema();
 
         final WarehouseManager warehouseManager = GlobalStateMgr.getCurrentState().getWarehouseMgr();

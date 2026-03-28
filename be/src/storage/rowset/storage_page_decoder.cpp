@@ -136,6 +136,7 @@ DataDecoder* DataDecoder::get_data_decoder(EncodingTypePB encoding) {
         return &g_binary_dict_decoder;
     }
     case FOR_ENCODING:
+    case FSST_ENCODING:
     case PLAIN_ENCODING:
     case PREFIX_ENCODING:
     case RLE: {

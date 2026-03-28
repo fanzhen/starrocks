@@ -341,6 +341,8 @@ public:
         }
         return _primary_key_encoding_type;
     }
+    bool enable_fsst_encoding() const { return _enable_fsst_encoding; }
+
     void append_column(TabletColumn column);
 
     int32_t schema_version() const { return _schema_version; }
@@ -434,6 +436,7 @@ private:
     int32_t _schema_version = -1;
 
     PrimaryKeyEncodingType _primary_key_encoding_type = PrimaryKeyEncodingType::PK_ENCODING_TYPE_NONE;
+    bool _enable_fsst_encoding = false;
 };
 
 bool operator==(const TabletSchema& a, const TabletSchema& b);

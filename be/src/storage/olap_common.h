@@ -254,6 +254,7 @@ struct OlapReaderStatistics {
     int64_t zone_map_filter_ns = 0;
     int64_t rows_key_range_filter_ns = 0;
     int64_t bf_filter_ns = 0;
+    int64_t compressed_encoding_filter_ns = 0;
 
     int64_t segment_stats_filtered = 0;
     int64_t rows_key_range_filtered = 0;
@@ -262,6 +263,7 @@ struct OlapReaderStatistics {
     int64_t rows_stats_filtered = 0;
     int64_t rows_vector_index_filtered = 0;
     int64_t rows_bf_filtered = 0;
+    int64_t rows_compressed_encoding_filtered = 0;
     int64_t rows_del_filtered = 0;
     int64_t del_filter_ns = 0;
 

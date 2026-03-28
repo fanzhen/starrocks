@@ -183,6 +183,7 @@ Status SegmentWriter::init(const std::vector<uint32_t>& column_indexes, bool has
         }
         opts.need_bloom_filter = column.is_bf_column();
         opts.need_bitmap_index = column.has_bitmap_index();
+        opts.enable_fsst_encoding = _tablet_schema->enable_fsst_encoding();
         opts.need_inverted_index = _tablet_schema->has_index(column.unique_id(), GIN);
         opts.need_vector_index = _tablet_schema->has_index(column.unique_id(), IndexType::VECTOR);
 

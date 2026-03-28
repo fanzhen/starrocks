@@ -55,6 +55,7 @@ enum EncodingTypePB {
     DICT_ENCODING = 5;
     BIT_SHUFFLE = 6;
     FOR_ENCODING = 7; // Frame-Of-Reference
+    FSST_ENCODING = 9; // Fast Static Symbol Table for strings
 }
 
 enum PageTypePB {
@@ -199,6 +200,8 @@ message ColumnMetaPB {
     // for json flat column only
     optional bytes name = 33;
     optional int32 compression_level = 34;
+    // FSST encoding: serialized symbol table (column-level, for compressed predicate optimization)
+    optional bytes fsst_symbol_table = 37;
 }
 
 enum VectorIndexStorageTypePB {

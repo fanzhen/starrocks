@@ -438,6 +438,9 @@ Status convert_t_schema_to_pb_schema(const TTabletSchema& tablet_schema, uint32_
     if (has_bf_columns && tablet_schema.__isset.bloom_filter_fpp) {
         schema->set_bf_fpp(tablet_schema.bloom_filter_fpp);
     }
+    if (tablet_schema.__isset.enable_fsst_encoding) {
+        schema->set_enable_fsst_encoding(tablet_schema.enable_fsst_encoding);
+    }
     return validate_tablet_schema(*schema);
 }
 

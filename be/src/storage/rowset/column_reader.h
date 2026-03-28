@@ -142,6 +142,8 @@ public:
     ZoneMapPB* segment_zone_map() const { return _segment_zone_map.get(); }
 
     PagePointer get_dict_page_pointer() const { return _dict_page_pointer; }
+    bool has_fsst_symbol_table() const { return !_fsst_symbol_table_data.empty(); }
+    const std::string& fsst_symbol_table_data() const { return _fsst_symbol_table_data; }
     LogicalType column_type() const { return _column_type; }
     int32_t column_length() const { return _column_length; }
     bool has_all_dict_encoded() const { return _flags & kHasAllDictEncodedMask; }
@@ -259,6 +261,7 @@ private:
     // and now the content that is not needed in Meta is not saved to ColumnReader
     LogicalType _column_type = TYPE_UNKNOWN;
     [[maybe_unused]] LogicalType _column_child_type = TYPE_UNKNOWN;
+    std::string _fsst_symbol_table_data;
     int32_t _column_length = 0; // Original column length from segment footer
     PagePointer _dict_page_pointer;
     uint64_t _total_mem_footprint = 0;

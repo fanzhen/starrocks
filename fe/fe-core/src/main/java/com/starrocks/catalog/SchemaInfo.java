@@ -64,6 +64,8 @@ public class SchemaInfo {
     private final int compressionLevel;
     @SerializedName("primaryKeyEncodingType")
     private final TPrimaryKeyEncodingType primaryKeyEncodingType;
+    @SerializedName("enableFsstEncoding")
+    private final boolean enableFsstEncoding;
 
     private SchemaInfo(Builder builder) {
         this.id = builder.id;
@@ -81,6 +83,7 @@ public class SchemaInfo {
         this.compressionType = builder.compressionType;
         this.compressionLevel = builder.compressionLevel;
         this.primaryKeyEncodingType = builder.primaryKeyEncodingType;
+        this.enableFsstEncoding = builder.enableFsstEncoding;
     }
 
     public long getId() {
@@ -175,6 +178,7 @@ public class SchemaInfo {
         if (primaryKeyEncodingType != null) {
             tSchema.setPrimary_key_encoding_type(primaryKeyEncodingType);
         }
+        tSchema.setEnable_fsst_encoding(enableFsstEncoding);
         return tSchema;
     }
 
@@ -224,6 +228,7 @@ public class SchemaInfo {
         private TCompressionType compressionType;
         private int compressionLevel = -1;
         private TPrimaryKeyEncodingType primaryKeyEncodingType;
+        private boolean enableFsstEncoding = false;
 
         private Builder() {
         }
@@ -322,6 +327,11 @@ public class SchemaInfo {
             return this;
         }
 
+        public Builder setEnableFsstEncoding(boolean enableFsstEncoding) {
+            this.enableFsstEncoding = enableFsstEncoding;
+            return this;
+        }
+
         public SchemaInfo build() {
             Preconditions.checkState(id > 0);
             Preconditions.checkState(keysType != null);
@@ -351,6 +361,7 @@ public class SchemaInfo {
                 .setCompressionType(table.getCompressionType())
                 .setCompressionLevel(table.getCompressionLevel())
                 .setPrimaryKeyEncodingType(table.getPrimaryKeyEncodingType())
+                .setEnableFsstEncoding(table.enableFsstEncoding())
                 .build();
     }
 }

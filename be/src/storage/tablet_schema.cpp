@@ -576,6 +576,7 @@ void TabletSchema::_init_from_pb(const TabletSchemaPB& schema) {
     } else {
         _primary_key_encoding_type = PrimaryKeyEncodingType::PK_ENCODING_TYPE_NONE;
     }
+    _enable_fsst_encoding = schema.enable_fsst_encoding();
 }
 
 Status TabletSchema::_build_current_tablet_schema(int64_t schema_id, int32_t version,
@@ -588,6 +589,7 @@ Status TabletSchema::_build_current_tablet_schema(int64_t schema_id, int32_t ver
     _compression_type = ori_tablet_schema.compression_type();
     _compression_level = ori_tablet_schema.compression_level();
     _primary_key_encoding_type = ori_tablet_schema._primary_key_encoding_type;
+    _enable_fsst_encoding = ori_tablet_schema._enable_fsst_encoding;
 
     // todo(yixiu): unique_id
     _next_column_unique_id = ori_tablet_schema.next_column_unique_id();
@@ -673,6 +675,7 @@ void TabletSchema::to_schema_pb(TabletSchemaPB* tablet_schema_pb) const {
     // for simplicity, we always persist the primary key encoding type even for non-cloud-native tables
     tablet_schema_pb->set_primary_key_encoding_type(
             PrimaryKeyEncoder::pb_from_encoding_type(_primary_key_encoding_type));
+    tablet_schema_pb->set_enable_fsst_encoding(_enable_fsst_encoding);
 }
 
 Status TabletSchema::get_indexes_for_column(int32_t col_unique_id,

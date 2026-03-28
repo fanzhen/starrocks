@@ -324,6 +324,7 @@ private:
     Status _get_row_ranges_by_zone_map();
     Status _get_row_ranges_by_vector_index();
     Status _get_row_ranges_by_bloom_filter();
+    Status _get_row_ranges_by_compressed_encoding();
     Status _get_row_ranges_by_rowid_range();
     Status _get_row_ranges_by_row_ids(std::vector<int64_t>* result_ids, SparseRange<>* r);
 
@@ -891,6 +892,11 @@ Status SegmentIterator::_init_internal() {
     RETURN_IF_ERROR(_apply_bitmap_index());
     RETURN_IF_ERROR(_get_row_ranges_by_zone_map());
     RETURN_IF_ERROR(_get_row_ranges_by_bloom_filter());
+    // NOTE: Compressed encoding filter disabled (Phase 8 optimization).
+    // The separate pre-scan of all data pages for row-level filtering causes double IO
+    // and double decode, which is a net performance loss. Predicate evaluation now happens
+    // in the normal scan path via next_batch/next_batch_with_filter.
+    // RETURN_IF_ERROR(_get_row_ranges_by_compressed_encoding());
     RETURN_IF_ERROR(_apply_inverted_index());
     if (apply_del_vec_after_all_index_filter) {
         RETURN_IF_ERROR(_apply_del_vector());
@@ -3504,6 +3510,111 @@ Status SegmentIterator::_get_row_ranges_by_bloom_filter() {
     RETURN_IF_ERROR(
             _opts.pred_tree.visit(BloomFilterEvaluator{_opts.pred_tree, _column_iterators, used_nodes}, _scan_range));
     _opts.stats->rows_bf_filtered += prev_size - _scan_range.span_size();
+
+    return Status::OK();
+}
+
+struct CompressedEncodingSupportChecker {
+    bool operator()(const PredicateColumnNode& node) const {
+        // Always mark as supported — get_row_ranges_by_compressed_encoding internally
+        // checks encoding type and no-ops for unsupported columns (returns all rows).
+        used_nodes.emplace(&node);
+        return true;
+    }
+
+    bool operator()(const PredicateAndNode& node) {
+        bool support = false;
+        for (const auto& child : node.children()) {
+            support |= child.visit(*this);
+        }
+        if (support) {
+            used_nodes.emplace(&node);
+        }
+        return support;
+    }
+
+    bool operator()(const PredicateOrNode& node) {
+        const bool support = std::all_of(node.children().begin(), node.children().end(),
+                                         [&](const auto& child) { return child.visit(*this); });
+        if (support) {
+            used_nodes.emplace(&node);
+        }
+        return support;
+    }
+
+    std::unordered_set<const PredicateBaseNode*>& used_nodes;
+};
+
+struct CompressedEncodingEvaluator {
+    Status operator()(const PredicateAndNode& node, SparseRange<>& dest_ranges) {
+        if (!used_nodes.contains(&node)) {
+            return Status::OK();
+        }
+
+        const auto& ctx = pred_tree.compound_node_context(node.id());
+        const auto& cid_to_col_preds = ctx.cid_to_col_preds(node);
+        for (const auto& [cid, col_preds] : cid_to_col_preds) {
+            RETURN_IF_ERROR(column_iterators[cid]->get_row_ranges_by_compressed_encoding(col_preds, &dest_ranges));
+        }
+
+        for (const auto& child : node.compound_children()) {
+            RETURN_IF_ERROR(child.visit(*this, dest_ranges));
+        }
+        return Status::OK();
+    }
+
+    Status operator()(const PredicateOrNode& node, SparseRange<>& dest_ranges) {
+        if (node.empty() || !used_nodes.contains(&node)) {
+            return Status::OK();
+        }
+
+        SparseRange<> cur_dest_ranges;
+        const auto& ctx = pred_tree.compound_node_context(node.id());
+        const auto& cid_to_col_preds = ctx.cid_to_col_preds(node);
+        for (const auto& [cid, col_preds] : cid_to_col_preds) {
+            // Evaluate each predicate individually and union results.
+            // Unlike bloom filter (page-level "might contain"), compressed encoding
+            // applies row-level filtering — passing multiple predicates to a single call
+            // would AND them, which is wrong for OR semantics.
+            for (const auto* pred : col_preds) {
+                auto child_ranges = dest_ranges;
+                const std::vector<const ColumnPredicate*> single_pred = {pred};
+                RETURN_IF_ERROR(
+                        column_iterators[cid]->get_row_ranges_by_compressed_encoding(single_pred, &child_ranges));
+                cur_dest_ranges |= child_ranges;
+            }
+        }
+
+        for (const auto& child : node.compound_children()) {
+            auto child_ranges = dest_ranges;
+            RETURN_IF_ERROR(child.visit(*this, child_ranges));
+            cur_dest_ranges |= child_ranges;
+        }
+
+        dest_ranges &= cur_dest_ranges;
+
+        return Status::OK();
+    }
+
+    const PredicateTree& pred_tree;
+    std::vector<std::unique_ptr<ColumnIterator>>& column_iterators;
+    std::unordered_set<const PredicateBaseNode*>& used_nodes;
+};
+
+Status SegmentIterator::_get_row_ranges_by_compressed_encoding() {
+    RETURN_IF(_scan_range.empty(), Status::OK());
+    RETURN_IF(_opts.pred_tree.empty(), Status::OK());
+
+    SCOPED_RAW_TIMER(&_opts.stats->compressed_encoding_filter_ns);
+
+    std::unordered_set<const PredicateBaseNode*> used_nodes;
+    const bool support = _opts.pred_tree.visit(CompressedEncodingSupportChecker{used_nodes});
+    RETURN_IF(!support, Status::OK());
+
+    const size_t prev_size = _scan_range.span_size();
+    RETURN_IF_ERROR(_opts.pred_tree.visit(
+            CompressedEncodingEvaluator{_opts.pred_tree, _column_iterators, used_nodes}, _scan_range));
+    _opts.stats->rows_compressed_encoding_filtered += (prev_size - _scan_range.span_size());
 
     return Status::OK();
 }

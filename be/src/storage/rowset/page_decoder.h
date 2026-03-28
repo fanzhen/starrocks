@@ -117,6 +117,15 @@ public:
         return Status::NotSupported("PageDecoder Doesn't Support read_dict_codes_by_rowids");
     }
 
+    // Evaluate a predicate directly on compressed/encoded data without full decoding.
+    // Subclasses (e.g., FSSTPageDecoder, ALPPageDecoder) can override this to perform
+    // predicate evaluation in the encoded domain for better performance.
+    // Default implementation: no compressed encoding evaluation, return all rows.
+    virtual Status evaluate_predicate_compressed(const ColumnPredicate* pred, SparseRange<>* row_ranges) {
+        row_ranges->add(Range<>(0, count()));
+        return Status::OK();
+    }
+
     // Return the number of elements in this page.
     virtual uint32_t count() const = 0;
 

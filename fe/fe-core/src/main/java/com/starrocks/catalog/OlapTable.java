@@ -2067,6 +2067,17 @@ public class OlapTable extends Table {
         return tableProperty.enablePersistentIndex();
     }
 
+    public boolean enableFsstEncoding() {
+        return tableProperty.enableFsstEncoding();
+    }
+
+    public void setEnableFsstEncoding(boolean enableFsstEncoding) {
+        tableProperty
+                .modifyTableProperties(PropertyAnalyzer.PROPERTIES_ENABLE_FSST_ENCODING,
+                        Boolean.valueOf(enableFsstEncoding).toString());
+        tableProperty.buildEnableFsstEncoding();
+    }
+
     public int primaryIndexCacheExpireSec() {
         return tableProperty.primaryIndexCacheExpireSec();
     }

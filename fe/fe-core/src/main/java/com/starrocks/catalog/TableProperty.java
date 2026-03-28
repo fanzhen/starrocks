@@ -249,6 +249,8 @@ public class TableProperty implements Writable, GsonPostProcessable {
 
     private boolean enablePersistentIndex = false;
 
+    private boolean enableFsstEncoding = false;
+
     // Only meaningful when enablePersistentIndex = true.
     TPersistentIndexType persistentIndexType;
 
@@ -382,6 +384,7 @@ public class TableProperty implements Writable, GsonPostProcessable {
         this.mvQueryRewriteSwitch = other.mvQueryRewriteSwitch;
         this.mvTransparentRewriteMode = other.mvTransparentRewriteMode;
         this.enablePersistentIndex = other.enablePersistentIndex;
+        this.enableFsstEncoding = other.enableFsstEncoding;
         this.persistentIndexType = other.persistentIndexType;
         this.primaryIndexCacheExpireSec = other.primaryIndexCacheExpireSec;
         this.storageVolume = other.storageVolume;
@@ -879,6 +882,12 @@ public class TableProperty implements Writable, GsonPostProcessable {
         return this;
     }
 
+    public TableProperty buildEnableFsstEncoding() {
+        enableFsstEncoding = Boolean.parseBoolean(
+                properties.getOrDefault(PropertyAnalyzer.PROPERTIES_ENABLE_FSST_ENCODING, "false"));
+        return this;
+    }
+
     public TableProperty buildPrimaryIndexCacheExpireSec() {
         primaryIndexCacheExpireSec = Integer.parseInt(properties.getOrDefault(
                 PropertyAnalyzer.PROPERTIES_PRIMARY_INDEX_CACHE_EXPIRE_SEC, "0"));
@@ -1207,6 +1216,10 @@ public class TableProperty implements Writable, GsonPostProcessable {
 
     public boolean enablePersistentIndex() {
         return enablePersistentIndex;
+    }
+
+    public boolean enableFsstEncoding() {
+        return enableFsstEncoding;
     }
 
     public boolean isFileBundling() {

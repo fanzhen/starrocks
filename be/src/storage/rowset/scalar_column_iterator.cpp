@@ -45,6 +45,7 @@
 #include "storage/rowset/column_reader.h"
 #include "storage/rowset/dict_page.h"
 #include "storage/rowset/encoding_info.h"
+#include "storage/rowset/fsst_page.h"
 #include "storage/rowset/page_handle_fwd.h"
 #include "types/logical_type.h"
 
@@ -66,6 +67,16 @@ Status ScalarColumnIterator::init(const ColumnIteratorOptions& opts) {
     RETURN_IF_ERROR(_reader->load_ordinal_index(index_opts));
     _opts.stats->total_columns_data_page_count += _reader->num_data_pages();
 
+    if (_reader->encoding_info()->encoding() == FSST_ENCODING) {
+        RETURN_IF(!_reader->has_fsst_symbol_table(),
+                  Status::Corruption("FSST column missing column-level symbol table"));
+        LogicalType ct = delegate_type(_reader->column_type());
+        if (ct == TYPE_CHAR) {
+            _init_fsst_decoder_func = &ScalarColumnIterator::_do_init_fsst_decoder<TYPE_CHAR>;
+        } else {
+            _init_fsst_decoder_func = &ScalarColumnIterator::_do_init_fsst_decoder<TYPE_VARCHAR>;
+        }
+    }
     if (_reader->encoding_info()->encoding() != DICT_ENCODING) {
         return Status::OK();
     }
@@ -423,6 +434,28 @@ Status ScalarColumnIterator::_do_init_dict_decoder() {
     return Status::OK();
 }
 
+Status ScalarColumnIterator::_load_fsst_symbol_table() {
+    DCHECK(_fsst_symbol_table == nullptr);
+    _fsst_symbol_table = std::make_unique<fsst_detail::SymbolTable>();
+    const auto& data = _reader->fsst_symbol_table_data();
+    size_t consumed = _fsst_symbol_table->deserialize(reinterpret_cast<const uint8_t*>(data.data()), data.size());
+    if (consumed == 0) {
+        return Status::Corruption("Failed to deserialize FSST symbol table from column metadata");
+    }
+    return Status::OK();
+}
+
+template <LogicalType Type>
+Status ScalarColumnIterator::_do_init_fsst_decoder() {
+    auto* fsst_decoder = down_cast<FSSTPageDecoder<Type>*>(_page->data_decoder());
+    if (_fsst_symbol_table == nullptr) {
+        RETURN_IF_ERROR(_load_fsst_symbol_table());
+    }
+    fsst_decoder->set_symbol_table(_fsst_symbol_table.get());
+    fsst_decoder->set_encoded_pred_cache(&_fsst_cached_encoded_pred, &_fsst_cached_pred_raw);
+    return Status::OK();
+}
+
 Status ScalarColumnIterator::_read_data_page(const OrdinalPageIndexIterator& iter) {
     PageHandle handle;
     Slice page_body;
@@ -438,6 +471,9 @@ Status ScalarColumnIterator::_read_data_page(const OrdinalPageIndexIterator& ite
     // because of page cache.
     if (_init_dict_decoder_func != nullptr) {
         RETURN_IF_ERROR((this->*_init_dict_decoder_func)());
+    }
+    if (_init_fsst_decoder_func != nullptr) {
+        RETURN_IF_ERROR((this->*_init_fsst_decoder_func)());
     }
     return Status::OK();
 }
@@ -503,6 +539,90 @@ Status ScalarColumnIterator::get_row_ranges_by_bloom_filter(const std::vector<co
     } else {
         RETURN_IF_ERROR(_reader->ngram_bloom_filter(predicates, row_ranges, opts));
     }
+    return Status::OK();
+}
+
+Status ScalarColumnIterator::get_row_ranges_by_compressed_encoding(
+        const std::vector<const ColumnPredicate*>& predicates, SparseRange<>* row_ranges) {
+    // Only FSST-encoded columns support compressed predicate evaluation.
+    if (_reader->encoding_info()->encoding() != FSST_ENCODING) {
+        return Status::OK();
+    }
+
+    // Save current iterator state to restore after page traversal.
+    auto saved_ordinal = _current_ordinal;
+    auto saved_page = std::move(_page);
+    auto saved_page_iter = _page_iter;
+
+    SparseRange<> matching_ranges;
+
+    // Iterate all data pages and evaluate predicates on compressed data.
+    OrdinalPageIndexIterator page_iter;
+    RETURN_IF_ERROR(_reader->seek_to_first(&page_iter));
+
+    while (page_iter.valid()) {
+        PageHandle handle;
+        Slice page_body;
+        PageFooterPB footer;
+        RETURN_IF_ERROR(_reader->read_page(_opts, page_iter.page(), &handle, &page_body, &footer));
+
+        std::unique_ptr<ParsedPage> page;
+        RETURN_IF_ERROR(parse_page(&page, std::move(handle), page_body, footer.data_page_footer(),
+                                   _reader->encoding_info(), page_iter.page(), page_iter.page_index()));
+
+        // Inject FSST symbol table into the temporary decoder so that
+        // evaluate_predicate_compressed() can encode the predicate constant
+        // and compare in encoded space.  Without this, the decoder falls back
+        // to "match all rows" (silent no-op).
+        if (_fsst_symbol_table == nullptr) {
+            RETURN_IF_ERROR(_load_fsst_symbol_table());
+        }
+        auto* fsst_dec = down_cast<FSSTPageDecoder<TYPE_VARCHAR>*>(page->data_decoder());
+        fsst_dec->set_symbol_table(_fsst_symbol_table.get());
+        fsst_dec->set_encoded_pred_cache(&_fsst_cached_encoded_pred, &_fsst_cached_pred_raw);
+
+        ordinal_t page_first_ordinal = page->first_ordinal();
+
+        // Evaluate each predicate on the page's compressed data.
+        // For AND semantics, we intersect results across predicates within a page.
+        SparseRange<> page_match;
+        bool first_pred = true;
+
+        for (const auto* pred : predicates) {
+            SparseRange<> pred_match;
+            auto* decoder = page->data_decoder();
+            auto status = decoder->evaluate_predicate_compressed(pred, &pred_match);
+            if (!status.ok()) {
+                // If evaluation fails, fall back to matching all rows in this page.
+                pred_match.clear();
+                pred_match.add(Range<>(0, page->num_rows()));
+            }
+
+            if (first_pred) {
+                page_match = std::move(pred_match);
+                first_pred = false;
+            } else {
+                page_match &= pred_match;
+            }
+        }
+
+        // Offset page-local ranges to segment-global ordinals.
+        for (size_t i = 0; i < page_match.size(); ++i) {
+            const auto& r = page_match[i];
+            matching_ranges.add(Range<>(r.begin() + page_first_ordinal, r.end() + page_first_ordinal));
+        }
+
+        page_iter.next();
+    }
+
+    // Intersect with the input row_ranges.
+    *row_ranges = row_ranges->intersection(matching_ranges);
+
+    // Restore iterator state.
+    _page = std::move(saved_page);
+    _page_iter = saved_page_iter;
+    _current_ordinal = saved_ordinal;
+
     return Status::OK();
 }
 

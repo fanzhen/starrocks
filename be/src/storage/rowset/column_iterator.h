@@ -161,6 +161,13 @@ public:
         return Status::OK();
     }
 
+    // Evaluate predicates on compressed/encoded column data (e.g., ALP, FSST, FastLanes)
+    // without full decoding. Default: no-op (return OK without modifying row_ranges).
+    virtual Status get_row_ranges_by_compressed_encoding(const std::vector<const ColumnPredicate*>& predicates,
+                                                         SparseRange<>* row_ranges) {
+        return Status::OK();
+    }
+
     // return true iff all data pages of this column are encoded as dictionary encoding.
     // NOTE: the ColumnIterator must have been initialized with `check_dict_encoding`,
     // otherwise this method will always return false.
