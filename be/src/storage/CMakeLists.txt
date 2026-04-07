@@ -239,6 +239,8 @@ set(STORAGE_FILES
     lake/tablet_internal_parallel_merge_task.cpp
     load_spill_block_manager.cpp
     load_chunk_spiller.cpp
+    kv_index/kv_index_writer.cpp
+    kv_index/kv_index_reader.cpp
     sstable/block_builder.cpp
     sstable/block.cpp
     sstable/coding.cpp

@@ -399,6 +399,7 @@ SET(DW_TEST_FILES
     ./storage/binlog_manager_test.cpp
     ./storage/binlog_reader_test.cpp
     ./storage/binlog_test_base.cpp
+    ./storage/kv_index/kv_index_test.cpp
     ./storage/chunk_aggregator_test.cpp
     ./storage/chunk_helper_test.cpp
     ./storage/column_aggregator_test.cpp
