@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <random>
 
+#include "base/testutil/assert.h"
 #include "column/binary_column.h"
 #include "column/chunk.h"
 #include "column/field.h"
@@ -33,13 +34,12 @@ namespace starrocks {
 
 class KVIndexTest : public ::testing::Test {
 public:
-    static void SetUpTestCase() { CHECK_OK(fs::create_directories(kTestDir)); }
+    static void SetUpTestCase() { ASSERT_OK(fs::create_directories(kTestDir)); }
     static void TearDownTestCase() { (void)fs::remove_all(kTestDir); }
 
 protected:
     constexpr static const char* kTestDir = "./kv_index_test";
 
-    // Helper: create a value schema with (INT, VARCHAR, DOUBLE), all nullable
     static Schema make_value_schema() {
         Fields fields;
         fields.emplace_back(std::make_shared<Field>(0, "col_int", LogicalType::TYPE_INT, true));
@@ -48,14 +48,12 @@ protected:
         return Schema(std::move(fields));
     }
 
-    // Helper: create keys column with given values
-    static std::shared_ptr<Int64Column> make_keys(const std::vector<int64_t>& vals) {
+    static ColumnPtr make_keys(const std::vector<int64_t>& vals) {
         auto col = Int64Column::create();
         col->append_numbers(vals.data(), vals.size() * sizeof(int64_t));
         return col;
     }
 
-    // Helper: create a value chunk with INT, VARCHAR, DOUBLE columns
     static ChunkUniquePtr make_value_chunk(const std::vector<int32_t>& ints, const std::vector<std::string>& strs,
                                             const std::vector<double>& dbls,
                                             const std::vector<bool>& int_nulls = {},
@@ -65,30 +63,27 @@ protected:
         auto schema = make_value_schema();
         auto chunk = ChunkHelper::new_chunk(schema, n);
 
-        auto& int_col = chunk->get_column_by_index(0);
         for (size_t i = 0; i < n; i++) {
             if (!int_nulls.empty() && int_nulls[i]) {
-                int_col->append_nulls(1);
+                chunk->get_column_by_index(0)->append_nulls(1);
             } else {
-                int_col->append_datum(Datum(ints[i]));
+                chunk->get_column_by_index(0)->append_datum(Datum(ints[i]));
             }
         }
 
-        auto& str_col = chunk->get_column_by_index(1);
         for (size_t i = 0; i < n; i++) {
             if (!str_nulls.empty() && str_nulls[i]) {
-                str_col->append_nulls(1);
+                chunk->get_column_by_index(1)->append_nulls(1);
             } else {
-                str_col->append_datum(Datum(Slice(strs[i])));
+                chunk->get_column_by_index(1)->append_datum(Datum(Slice(strs[i])));
             }
         }
 
-        auto& dbl_col = chunk->get_column_by_index(2);
         for (size_t i = 0; i < n; i++) {
             if (!dbl_nulls.empty() && dbl_nulls[i]) {
-                dbl_col->append_nulls(1);
+                chunk->get_column_by_index(2)->append_nulls(1);
             } else {
-                dbl_col->append_datum(Datum(dbls[i]));
+                chunk->get_column_by_index(2)->append_datum(Datum(dbls[i]));
             }
         }
 
@@ -100,21 +95,19 @@ protected:
         uint64_t file_size;
     };
 
-    // Helper: write an SSTable and return path + file_size
     SstInfo write_sst(const std::string& name, const Schema& schema, const Column& keys,
                        const Chunk& value_chunk) {
         std::string path = std::string(kTestDir) + "/" + name;
         ASSIGN_OR_ABORT(auto file, fs::new_writable_file(path));
         KVIndexWriter writer(schema, file.get());
-        CHECK_OK(writer.add_chunk(keys, value_chunk));
-        CHECK_OK(writer.finish());
+        EXPECT_OK(writer.add_chunk(keys, value_chunk));
+        EXPECT_OK(writer.finish());
         uint64_t fsize = writer.file_size();
         file->close();
         return {path, fsize};
     }
 };
 
-// Test basic write + read round-trip
 TEST_F(KVIndexTest, WriteReadRoundTrip) {
     auto schema = make_value_schema();
     const int N = 1000;
@@ -150,7 +143,6 @@ TEST_F(KVIndexTest, WriteReadRoundTrip) {
     }
 }
 
-// Test querying keys that don't exist
 TEST_F(KVIndexTest, KeyNotFound) {
     auto schema = make_value_schema();
     auto keys = make_keys({10, 20, 30});
@@ -170,7 +162,6 @@ TEST_F(KVIndexTest, KeyNotFound) {
     ASSERT_EQ(result->num_rows(), query_keys.size());
 }
 
-// Test mixed found and not-found keys
 TEST_F(KVIndexTest, MixedFoundAndNotFound) {
     auto schema = make_value_schema();
     auto keys = make_keys({10, 20, 30, 40, 50});
@@ -180,7 +171,6 @@ TEST_F(KVIndexTest, MixedFoundAndNotFound) {
     ASSIGN_OR_ABORT(auto file, fs::new_random_access_file(sst.path));
     ASSIGN_OR_ABORT(auto reader, KVIndexReader::open(schema, file.get(), sst.file_size));
 
-    // Query mix of existing and non-existing keys (out of order)
     std::vector<int64_t> query_keys = {50, 15, 10, 99, 30};
     std::vector<bool> found_mask;
     ASSIGN_OR_ABORT(auto result, reader->multi_get(query_keys, &found_mask));
@@ -200,7 +190,6 @@ TEST_F(KVIndexTest, MixedFoundAndNotFound) {
     ASSERT_EQ(result->get_column_by_index(0)->get(4).get_int32(), 3);
 }
 
-// Test NULL value handling
 TEST_F(KVIndexTest, NullValueHandling) {
     auto schema = make_value_schema();
     auto keys = make_keys({1, 2, 3, 4});
@@ -230,7 +219,6 @@ TEST_F(KVIndexTest, NullValueHandling) {
     ASSERT_TRUE(result->get_column_by_index(2)->is_null(3));
 }
 
-// Test large batch
 TEST_F(KVIndexTest, LargeBatch) {
     auto schema = make_value_schema();
     const int N = 100000;
@@ -269,7 +257,6 @@ TEST_F(KVIndexTest, LargeBatch) {
     }
 }
 
-// Test key ordering enforcement
 TEST_F(KVIndexTest, KeyOrdering) {
     auto schema = make_value_schema();
     auto keys = make_keys({10, 5});
@@ -283,7 +270,6 @@ TEST_F(KVIndexTest, KeyOrdering) {
     ASSERT_TRUE(st.is_invalid_argument()) << st.to_string();
 }
 
-// Test duplicate keys rejection
 TEST_F(KVIndexTest, DuplicateKeys) {
     auto schema = make_value_schema();
     auto keys = make_keys({10, 10});
@@ -297,12 +283,11 @@ TEST_F(KVIndexTest, DuplicateKeys) {
     ASSERT_TRUE(st.is_invalid_argument()) << st.to_string();
 }
 
-// Test multiple add_chunk calls
 TEST_F(KVIndexTest, MultipleAddChunks) {
     auto schema = make_value_schema();
     std::string path = std::string(kTestDir) + "/multi_chunk.sst";
-    ASSIGN_OR_ABORT(auto file, fs::new_writable_file(path));
-    KVIndexWriter writer(schema, file.get());
+    ASSIGN_OR_ABORT(auto wfile, fs::new_writable_file(path));
+    KVIndexWriter writer(schema, wfile.get());
 
     for (int batch = 0; batch < 3; batch++) {
         std::vector<int64_t> k;
@@ -317,12 +302,12 @@ TEST_F(KVIndexTest, MultipleAddChunks) {
         }
         auto keys = make_keys(k);
         auto chunk = make_value_chunk(iv, sv, dv);
-        CHECK_OK(writer.add_chunk(*keys, *chunk));
+        ASSERT_OK(writer.add_chunk(*keys, *chunk));
     }
 
-    CHECK_OK(writer.finish());
+    ASSERT_OK(writer.finish());
     uint64_t fsize = writer.file_size();
-    file->close();
+    wfile->close();
 
     ASSIGN_OR_ABORT(auto rfile, fs::new_random_access_file(path));
     ASSIGN_OR_ABORT(auto reader, KVIndexReader::open(schema, rfile.get(), fsize));
@@ -340,7 +325,6 @@ TEST_F(KVIndexTest, MultipleAddChunks) {
     }
 }
 
-// Test negative keys (big-endian order-preserving)
 TEST_F(KVIndexTest, NegativeKeys) {
     auto schema = make_value_schema();
     auto keys = make_keys({-100, -50, -1, 0, 1, 50, 100});
@@ -370,7 +354,6 @@ TEST_F(KVIndexTest, NegativeKeys) {
     ASSERT_EQ(result->get_column_by_index(0)->get(3).get_int32(), 100);
 }
 
-// Test empty multi_get
 TEST_F(KVIndexTest, EmptyMultiGet) {
     auto schema = make_value_schema();
     auto keys = make_keys({1, 2, 3});
@@ -388,7 +371,6 @@ TEST_F(KVIndexTest, EmptyMultiGet) {
     ASSERT_TRUE(found_mask.empty());
 }
 
-// Test cross-batch key ordering enforcement
 TEST_F(KVIndexTest, CrossBatchKeyOrdering) {
     auto schema = make_value_schema();
     std::string path = std::string(kTestDir) + "/cross_batch_order.sst";
@@ -397,9 +379,8 @@ TEST_F(KVIndexTest, CrossBatchKeyOrdering) {
 
     auto keys1 = make_keys({10, 20});
     auto chunk1 = make_value_chunk({1, 2}, {"a", "b"}, {0.1, 0.2});
-    CHECK_OK(writer.add_chunk(*keys1, *chunk1));
+    ASSERT_OK(writer.add_chunk(*keys1, *chunk1));
 
-    // key 15 violates ordering (should be > 20)
     auto keys2 = make_keys({15});
     auto chunk2 = make_value_chunk({3}, {"c"}, {0.3});
     auto st = writer.add_chunk(*keys2, *chunk2);
