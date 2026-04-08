@@ -230,6 +230,7 @@ enum TIndexType {
   GIN,
   NGRAMBF,
   VECTOR,
+  KV,
 }
 
 // Not define UNKNOWN type for better compatibility with

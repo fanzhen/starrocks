@@ -17,13 +17,16 @@ package com.starrocks.connector.paimon;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import com.starrocks.catalog.Column;
+import com.starrocks.catalog.ColumnId;
 import com.starrocks.catalog.Database;
+import com.starrocks.catalog.Index;
 import com.starrocks.catalog.PaimonTable;
 import com.starrocks.catalog.PaimonView;
 import com.starrocks.catalog.PartitionKey;
 import com.starrocks.catalog.Table;
 import com.starrocks.common.Config;
 import com.starrocks.common.DdlException;
+import com.starrocks.common.StarRocksException;
 import com.starrocks.common.profile.Timer;
 import com.starrocks.common.profile.Tracers;
 import com.starrocks.common.tvr.TvrDeltaStats;
@@ -48,10 +51,16 @@ import com.starrocks.connector.exception.StarRocksConnectorException;
 import com.starrocks.connector.statistics.StatisticsUtils;
 import com.starrocks.credential.CloudConfiguration;
 import com.starrocks.qe.ConnectContext;
+import com.starrocks.qe.ShowResultSet;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.analyzer.SemanticException;
+import com.starrocks.sql.ast.AlterClause;
+import com.starrocks.sql.ast.AlterTableStmt;
+import com.starrocks.sql.ast.CreateIndexClause;
 import com.starrocks.sql.ast.CreateViewStmt;
+import com.starrocks.sql.ast.DropIndexClause;
 import com.starrocks.sql.ast.DropTableStmt;
+import com.starrocks.sql.ast.IndexDef;
 import com.starrocks.sql.ast.KeyPartitionRef;
 import com.starrocks.sql.ast.TruncateTablePartitionStmt;
 import com.starrocks.sql.ast.TruncateTableStmt;
@@ -1077,5 +1086,35 @@ public class PaimonMetadata implements ConnectorMetadata {
         }
 
         return true;
+    }
+
+    @Override
+    public ShowResultSet alterTable(ConnectContext context, AlterTableStmt stmt) throws StarRocksException {
+        for (AlterClause clause : stmt.getAlterClauseList()) {
+            if (clause instanceof CreateIndexClause) {
+                CreateIndexClause createIndex = (CreateIndexClause) clause;
+                IndexDef indexDef = createIndex.getIndexDef();
+                if (indexDef.getIndexType() != IndexDef.IndexType.KV) {
+                    throw new DdlException("Only KV index is supported on Paimon tables");
+                }
+                Index index = new Index(indexDef.getIndexName(),
+                        indexDef.getColumns().stream()
+                                .map(ColumnId::create)
+                                .collect(Collectors.toList()),
+                        IndexDef.IndexType.KV,
+                        indexDef.getComment(),
+                        indexDef.getProperties());
+                GlobalStateMgr.getCurrentState().getKVIndexMetadataManager()
+                        .addIndex(stmt.getCatalogName(), stmt.getDbName(), stmt.getTableName(), index);
+            } else if (clause instanceof DropIndexClause) {
+                DropIndexClause dropIndex = (DropIndexClause) clause;
+                GlobalStateMgr.getCurrentState().getKVIndexMetadataManager()
+                        .dropIndex(stmt.getCatalogName(), stmt.getDbName(), stmt.getTableName(),
+                                dropIndex.getIndexName());
+            } else {
+                throw new DdlException("Paimon table doesn't support this ALTER operation");
+            }
+        }
+        return null;
     }
 }

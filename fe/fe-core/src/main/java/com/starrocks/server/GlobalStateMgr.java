@@ -66,6 +66,7 @@ import com.starrocks.catalog.DomainResolver;
 import com.starrocks.catalog.Function;
 import com.starrocks.catalog.FunctionSet;
 import com.starrocks.catalog.GlobalFunctionMgr;
+import com.starrocks.catalog.KVIndexMetadataManager;
 import com.starrocks.catalog.MaterializedView;
 import com.starrocks.catalog.MetaReplayState;
 import com.starrocks.catalog.RefreshDictionaryCacheTaskDaemon;
@@ -456,6 +457,7 @@ public class GlobalStateMgr {
     private final StarMgrMetaSyncer starMgrMetaSyncer;
 
     private MetadataMgr metadataMgr;
+    private final KVIndexMetadataManager kvIndexMetadataManager = new KVIndexMetadataManager();
     private final CatalogMgr catalogMgr;
     private final ConnectorMgr connectorMgr;
     private final ConnectorTblMetaInfoMgr connectorTblMetaInfoMgr;
@@ -1017,6 +1019,10 @@ public class GlobalStateMgr {
 
     public MetadataMgr getMetadataMgr() {
         return metadataMgr;
+    }
+
+    public KVIndexMetadataManager getKVIndexMetadataManager() {
+        return kvIndexMetadataManager;
     }
 
     public ConnectorTableTriggerAnalyzeMgr getConnectorTableTriggerAnalyzeMgr() {

@@ -83,6 +83,7 @@ import com.starrocks.sql.ast.DropPartitionColumnClause;
 import com.starrocks.sql.ast.DropRollupClause;
 import com.starrocks.sql.ast.ExpressionPartitionDesc;
 import com.starrocks.sql.ast.HashDistributionDesc;
+import com.starrocks.sql.ast.IndexDef;
 import com.starrocks.sql.ast.IndexDef.IndexType;
 import com.starrocks.sql.ast.KeysDesc;
 import com.starrocks.sql.ast.KeysType;
@@ -160,7 +161,12 @@ public class AlterTableClauseAnalyzer implements AstVisitorExtendInterface<Void,
 
     @Override
     public Void visitCreateIndexClause(CreateIndexClause clause, ConnectContext context) {
-        IndexAnalyzer.analyze(clause.getIndexDef());
+        IndexDef indexDef = clause.getIndexDef();
+        if (indexDef.getIndexType() == IndexDef.IndexType.KV) {
+            IndexAnalyzer.analyzeKVIndex(indexDef, table);
+        } else {
+            IndexAnalyzer.analyze(indexDef);
+        }
         return null;
     }
 

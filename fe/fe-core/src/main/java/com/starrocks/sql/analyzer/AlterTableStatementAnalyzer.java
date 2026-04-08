@@ -30,6 +30,7 @@ import com.starrocks.sql.ast.AlterClause;
 import com.starrocks.sql.ast.AlterTableStmt;
 import com.starrocks.sql.ast.CreateIndexClause;
 import com.starrocks.sql.ast.DropIndexClause;
+import com.starrocks.sql.ast.IndexDef;
 import com.starrocks.sql.ast.ModifyTablePropertiesClause;
 import com.starrocks.sql.ast.TableRef;
 import com.starrocks.sql.common.MetaUtils;
@@ -72,7 +73,19 @@ public class AlterTableStatementAnalyzer {
         }
 
         Table table = MetaUtils.getSessionAwareTable(context, null, tbl);
-        MetaUtils.checkNotSupportCatalog(table, TableOperation.ALTER);
+        // Allow KV index DDL on external tables (e.g., Paimon)
+        boolean allKVIndexOps = alterClauseList.stream().allMatch(clause -> {
+            if (clause instanceof CreateIndexClause) {
+                return ((CreateIndexClause) clause).getIndexDef().getIndexType() == IndexDef.IndexType.KV;
+            }
+            if (clause instanceof DropIndexClause) {
+                return true; // DropIndexClause doesn't carry type info, validated later
+            }
+            return false;
+        });
+        if (!allKVIndexOps) {
+            MetaUtils.checkNotSupportCatalog(table, TableOperation.ALTER);
+        }
         if (table.isTemporaryTable()) {
             throw new SemanticException("temporary table doesn't support alter table statement");
         }

@@ -56,12 +56,14 @@ import com.starrocks.backup.Repository;
 import com.starrocks.backup.RestoreJob;
 import com.starrocks.catalog.BasicTable;
 import com.starrocks.catalog.Catalog;
+import com.starrocks.catalog.ColumnId;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.ConnectorView;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.DynamicPartitionProperty;
 import com.starrocks.catalog.Function;
 import com.starrocks.catalog.Index;
+import com.starrocks.catalog.KVIndexMetadataManager;
 import com.starrocks.catalog.InternalCatalog;
 import com.starrocks.catalog.LocalTablet;
 import com.starrocks.catalog.MaterializedIndex;
@@ -2571,8 +2573,18 @@ public class ShowExecutor {
                                 index.getComment()));
                     }
                 } else {
-                    // other type view, mysql, hive, es
-                    // do nothing
+                    // External tables: check KV index metadata
+                    KVIndexMetadataManager kvMgr = GlobalStateMgr.getCurrentState().getKVIndexMetadataManager();
+                    List<Index> kvIndexes = kvMgr.getIndexes(catalogName, dbName, table.getName());
+                    for (Index index : kvIndexes) {
+                        List<String> colNames = index.getColumns().stream()
+                                .map(ColumnId::getId)
+                                .collect(Collectors.toList());
+                        rows.add(Lists.newArrayList(tableName.toString(), "",
+                                index.getIndexName(), "", String.join(",", colNames), "", "", "", "",
+                                "", String.format("%s%s", index.getIndexType().name(), index.getPropertiesString()),
+                                index.getComment()));
+                    }
                 }
             } finally {
                 locker.unLockTablesWithIntensiveDbLock(db.getId(), Lists.newArrayList(table.getId()), LockType.READ);

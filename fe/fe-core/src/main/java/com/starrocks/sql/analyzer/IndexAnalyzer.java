@@ -114,6 +114,38 @@ public class IndexAnalyzer {
     }
 
     /**
+     * Analyzes a KV index definition on an external table.
+     * KV indexes allow multiple columns (value columns) and only apply to Paimon tables.
+     */
+    public static void analyzeKVIndex(IndexDef indexDef, Table table) {
+        if (indexDef.getColumns() == null || indexDef.getColumns().isEmpty()) {
+            throw new SemanticException("KV index must specify at least one column.");
+        }
+        if (Strings.isNullOrEmpty(indexDef.getIndexName())) {
+            throw new SemanticException("index name cannot be blank.");
+        }
+        if (indexDef.getIndexName().length() > MAX_INDEX_NAME_LENGTH) {
+            throw new SemanticException("index name too long, the index name length at most is 64.");
+        }
+        TreeSet<String> distinct = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+        distinct.addAll(indexDef.getColumns());
+        if (indexDef.getColumns().size() != distinct.size()) {
+            throw new SemanticException("columns of index has duplicated.");
+        }
+        // KV index only supported on Paimon tables
+        if (table.getType() != Table.TableType.PAIMON) {
+            throw new SemanticException("KV index is only supported on Paimon tables");
+        }
+        // Validate columns exist in the table
+        for (String colName : indexDef.getColumns()) {
+            Column column = table.getColumn(colName);
+            if (column == null) {
+                throw new SemanticException("Column " + colName + " does not exist in table " + table.getName());
+            }
+        }
+    }
+
+    /**
      * Checks if a column is compatible with the specified index type and table keys type.
      *
      * @param column     the column to check

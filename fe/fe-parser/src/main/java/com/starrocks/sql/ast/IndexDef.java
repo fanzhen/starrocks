@@ -127,7 +127,8 @@ public class IndexDef implements ParseNode {
         BITMAP,
         GIN("GIN"),
         NGRAMBF("NGRAMBF"),
-        VECTOR("VECTOR");
+        VECTOR("VECTOR"),
+        KV("KV");
 
         IndexType(String name) {
             this.displayName = name;
