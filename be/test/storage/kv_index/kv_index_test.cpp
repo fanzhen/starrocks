@@ -34,7 +34,10 @@ namespace starrocks {
 
 class KVIndexTest : public ::testing::Test {
 public:
-    static void SetUpTestCase() { ASSERT_OK(fs::create_directories(kTestDir)); }
+    static void SetUpTestCase() {
+        (void)fs::remove_all(kTestDir);
+        ASSERT_OK(fs::create_directories(kTestDir));
+    }
     static void TearDownTestCase() { (void)fs::remove_all(kTestDir); }
 
 protected:
