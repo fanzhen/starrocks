@@ -62,28 +62,23 @@ protected:
         size_t n = ints.size();
         auto schema = make_value_schema();
         auto chunk = ChunkHelper::new_chunk(schema, n);
+        auto mcols = chunk->mutable_columns();
 
         for (size_t i = 0; i < n; i++) {
             if (!int_nulls.empty() && int_nulls[i]) {
-                chunk->get_column_by_index(0)->append_nulls(1);
+                mcols[0]->append_nulls(1);
             } else {
-                chunk->get_column_by_index(0)->append_datum(Datum(ints[i]));
+                mcols[0]->append_datum(Datum(ints[i]));
             }
-        }
-
-        for (size_t i = 0; i < n; i++) {
             if (!str_nulls.empty() && str_nulls[i]) {
-                chunk->get_column_by_index(1)->append_nulls(1);
+                mcols[1]->append_nulls(1);
             } else {
-                chunk->get_column_by_index(1)->append_datum(Datum(Slice(strs[i])));
+                mcols[1]->append_datum(Datum(Slice(strs[i])));
             }
-        }
-
-        for (size_t i = 0; i < n; i++) {
             if (!dbl_nulls.empty() && dbl_nulls[i]) {
-                chunk->get_column_by_index(2)->append_nulls(1);
+                mcols[2]->append_nulls(1);
             } else {
-                chunk->get_column_by_index(2)->append_datum(Datum(dbls[i]));
+                mcols[2]->append_datum(Datum(dbls[i]));
             }
         }
 
