@@ -37,7 +37,7 @@ KVIndexWriter::KVIndexWriter(const Schema& value_schema, WritableFile* file)
 }
 
 KVIndexWriter::~KVIndexWriter() {
-    if (_builder) {
+    if (_builder && !_finished) {
         _builder->Abandon();
     }
 }
@@ -92,6 +92,7 @@ Status KVIndexWriter::add_chunk(const Column& keys, const Chunk& value_chunk) {
 
 Status KVIndexWriter::finish() {
     RETURN_IF_ERROR(_builder->Finish());
+    _finished = true;
     return Status::OK();
 }
 

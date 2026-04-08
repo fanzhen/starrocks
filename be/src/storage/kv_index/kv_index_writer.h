@@ -65,6 +65,7 @@ private:
     std::unique_ptr<sstable::TableBuilder> _builder;
     int64_t _last_key = std::numeric_limits<int64_t>::min();
     bool _has_data = false;
+    bool _finished = false;
 };
 
 } // namespace starrocks
