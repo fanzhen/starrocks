@@ -212,21 +212,51 @@ class KVIndexTest : public ::testing::Test {
 ### E2E 验证
 
 ```bash
-# 远程机器 Docker 容器内
-./run-be-ut.sh --build-target kv_index_test --module kv_index_test --without-java-ext -j8
-# 期望: All tests passed
+# 远程机器 Docker 容器内 (注意: 测试编入 starrocks_dw_test 二进制, 非独立 target)
+docker exec sr-dev bash -c 'cd /build && ./run-be-ut.sh \
+  --build-target starrocks_dw_test \
+  --module starrocks_dw_test \
+  --gtest_filter "KVIndexTest.*" \
+  --without-java-ext -j8'
+# 期望: All 11 tests passed
 ```
 
 ### 验证流程
 
 ```
-本地编码完成 → git commit → git push
-→ 远程: git pull + Docker 内 run-be-ut.sh
+本地编码完成 → git commit → git push (fanzhen remote)
+→ 远程: git fetch + git checkout FETCH_HEAD
+→ Docker 内 run-be-ut.sh --build-target starrocks_dw_test --gtest_filter "KVIndexTest.*"
 → 全部 PASS → Stage 1 complete
 → 失败 → 本地修 bug → 新 commit → 回到 push
 ```
 
-### 状态: 未开始
+### 状态: ✅ 完成 (2026-04-08)
+
+**E2E 结果 (远程 8.217.233.254, Docker sr-dev, ASAN build):**
+```
+[==========] Running 11 tests from 1 test suite.
+[  PASSED  ] 11 tests. (1613 ms total)
+  KVIndexTest.WriteReadRoundTrip    (242 ms)
+  KVIndexTest.KeyNotFound           (2 ms)
+  KVIndexTest.MixedFoundAndNotFound (2 ms)
+  KVIndexTest.NullValueHandling     (3 ms)
+  KVIndexTest.LargeBatch            (1354 ms)
+  KVIndexTest.KeyOrdering           (0 ms)
+  KVIndexTest.DuplicateKeys         (0 ms)
+  KVIndexTest.MultipleAddChunks     (4 ms)
+  KVIndexTest.NegativeKeys          (3 ms)
+  KVIndexTest.EmptyMultiGet         (1 ms)
+  KVIndexTest.CrossBatchKeyOrdering (1 ms)
+```
+
+**修复的 bugs:**
+1. `ColumnPtr` = `ImmutPtr<const Column>` (COW 模式): 必须用 `chunk->mutable_columns()` 获取 `MutableColumnPtr` 才能修改列数据
+2. `NullableColumn::null_column()->get_data()` 返回 `ImmContainer` (不可变 span): 改用 `null_column_data()` 获取可变引用
+3. `TableBuilder::Abandon()` 断言 `!closed`: `KVIndexWriter` 析构函数需跳过已 `finish()` 的 builder (增加 `_finished` 标记)
+4. 测试目录残留文件: `SetUpTestCase` 需先 `remove_all` 再 `create_directories`
+5. `ASSIGN_OR_ABORT`/`ASSERT_OK` 宏需从 `base/testutil/assert.h` 引入
+6. `Int64Column::create()` 返回 `MutPtr` 不是 `shared_ptr`: 用 `ColumnPtr` 作为 `make_keys()` 返回类型
 
 ---
 
@@ -561,4 +591,35 @@ SET 'execution.runtime-mode' = 'batch';
 
 # Aliyun 镜像下载 Flink (Apache 源极慢):
 wget 'https://mirrors.aliyun.com/apache/flink/flink-1.18.1/flink-1.18.1-bin-scala_2.12.tgz'
+```
+
+### BE Unit Test Skill
+
+```bash
+# UT 测试文件编入 starrocks_dw_test 二进制 (不是独立 target)
+# 通过 --gtest_filter 选择特定测试
+docker exec sr-dev bash -c 'cd /build && ./run-be-ut.sh \
+  --build-target starrocks_dw_test \
+  --module starrocks_dw_test \
+  --gtest_filter "KVIndexTest.*" \
+  --without-java-ext -j8'
+
+# StarRocks Column COW 模式:
+# - ColumnPtr = ImmutPtr<Column> = RCPtr<const Column> → operator-> 返回 const Column*
+# - MutableColumnPtr = MutPtr<Column> = RCPtr<Column> → operator-> 返回 Column*
+# - 修改 Chunk 中的列: auto mcols = chunk->mutable_columns(); mcols[i]->append_datum(...)
+# - mutable_columns() 不破坏 chunk 内部 _columns (共享底层对象, refcount==1 时无拷贝)
+# - NullableColumn 可变 null 数据: nullable->null_column_data() (非 null_column()->get_data())
+
+# TableBuilder 生命周期:
+# - Finish() 后 closed=true, Abandon() 断言 !closed
+# - Writer 析构需跳过已 Finish 的 builder (用 _finished 标记)
+
+# 测试宏来源:
+# - ASSIGN_OR_ABORT, ASSERT_OK, EXPECT_OK → #include "base/testutil/assert.h"
+# - CHECK_OK 不可用于测试代码
+
+# SetUpTestCase 清理:
+# (void)fs::remove_all(kTestDir) 后再 fs::create_directories(kTestDir)
+# 防止上次残留文件导致 "File exists" 错误
 ```
