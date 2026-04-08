@@ -2575,15 +2575,16 @@ public class ShowExecutor {
                 } else {
                     // External tables: check KV index metadata
                     KVIndexMetadataManager kvMgr = GlobalStateMgr.getCurrentState().getKVIndexMetadataManager();
-                    List<Index> kvIndexes = kvMgr.getIndexes(catalogName, dbName, table.getName());
-                    for (Index index : kvIndexes) {
-                        List<String> colNames = index.getColumns().stream()
+                    List<KVIndexMetadataManager.KVIndexMeta> kvIndexMetas =
+                            kvMgr.getIndexMetas(catalogName, dbName, table.getName());
+                    for (KVIndexMetadataManager.KVIndexMeta meta : kvIndexMetas) {
+                        List<String> colNames = meta.getColumns().stream()
                                 .map(ColumnId::getId)
                                 .collect(Collectors.toList());
                         rows.add(Lists.newArrayList(tableName.toString(), "",
-                                index.getIndexName(), "", String.join(",", colNames), "", "", "", "",
-                                "", String.format("%s%s", index.getIndexType().name(), index.getPropertiesString()),
-                                index.getComment()));
+                                meta.getIndexName(), "", String.join(",", colNames), "", "", "", "",
+                                "", meta.getStatusString(),
+                                meta.getComment()));
                     }
                 }
             } finally {

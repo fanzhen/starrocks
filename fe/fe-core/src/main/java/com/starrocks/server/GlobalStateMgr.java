@@ -66,6 +66,7 @@ import com.starrocks.catalog.DomainResolver;
 import com.starrocks.catalog.Function;
 import com.starrocks.catalog.FunctionSet;
 import com.starrocks.catalog.GlobalFunctionMgr;
+import com.starrocks.catalog.KVIndexBuildExecutor;
 import com.starrocks.catalog.KVIndexMetadataManager;
 import com.starrocks.catalog.MaterializedView;
 import com.starrocks.catalog.MetaReplayState;
@@ -458,6 +459,7 @@ public class GlobalStateMgr {
 
     private MetadataMgr metadataMgr;
     private final KVIndexMetadataManager kvIndexMetadataManager = new KVIndexMetadataManager();
+    private final KVIndexBuildExecutor kvIndexBuildExecutor = new KVIndexBuildExecutor();
     private final CatalogMgr catalogMgr;
     private final ConnectorMgr connectorMgr;
     private final ConnectorTblMetaInfoMgr connectorTblMetaInfoMgr;
@@ -1023,6 +1025,10 @@ public class GlobalStateMgr {
 
     public KVIndexMetadataManager getKVIndexMetadataManager() {
         return kvIndexMetadataManager;
+    }
+
+    public KVIndexBuildExecutor getKVIndexBuildExecutor() {
+        return kvIndexBuildExecutor;
     }
 
     public ConnectorTableTriggerAnalyzeMgr getConnectorTableTriggerAnalyzeMgr() {

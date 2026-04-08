@@ -19,7 +19,6 @@ import com.google.common.collect.Lists;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.ColumnId;
 import com.starrocks.catalog.Database;
-import com.starrocks.catalog.Index;
 import com.starrocks.catalog.PaimonTable;
 import com.starrocks.catalog.PaimonView;
 import com.starrocks.catalog.PartitionKey;
@@ -1097,15 +1096,24 @@ public class PaimonMetadata implements ConnectorMetadata {
                 if (indexDef.getIndexType() != IndexDef.IndexType.KV) {
                     throw new DdlException("Only KV index is supported on Paimon tables");
                 }
-                Index index = new Index(indexDef.getIndexName(),
-                        indexDef.getColumns().stream()
-                                .map(ColumnId::create)
-                                .collect(Collectors.toList()),
-                        IndexDef.IndexType.KV,
-                        indexDef.getComment(),
-                        indexDef.getProperties());
+                List<ColumnId> columnIds = indexDef.getColumns().stream()
+                        .map(ColumnId::create)
+                        .collect(Collectors.toList());
                 GlobalStateMgr.getCurrentState().getKVIndexMetadataManager()
-                        .addIndex(stmt.getCatalogName(), stmt.getDbName(), stmt.getTableName(), index);
+                        .addIndexMeta(stmt.getCatalogName(), stmt.getDbName(), stmt.getTableName(),
+                                indexDef.getIndexName(), columnIds, IndexDef.IndexType.KV,
+                                indexDef.getComment(), indexDef.getProperties());
+                // Submit async build task
+                org.apache.paimon.table.Table nativeTable;
+                try {
+                    nativeTable = paimonNativeCatalog.getTable(
+                            Identifier.create(stmt.getDbName(), stmt.getTableName()));
+                } catch (Catalog.TableNotExistException e) {
+                    throw new DdlException("Paimon table not found: " + stmt.getDbName() + "." + stmt.getTableName());
+                }
+                GlobalStateMgr.getCurrentState().getKVIndexBuildExecutor()
+                        .submitBuildTask(stmt.getCatalogName(), stmt.getDbName(), stmt.getTableName(),
+                                indexDef.getIndexName(), indexDef.getColumns(), nativeTable);
             } else if (clause instanceof DropIndexClause) {
                 DropIndexClause dropIndex = (DropIndexClause) clause;
                 GlobalStateMgr.getCurrentState().getKVIndexMetadataManager()
