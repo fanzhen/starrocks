@@ -176,8 +176,8 @@ public class KVIndexBuildExecutor {
         // 7. Write SSTable file
         long sstFileSize;
         try (FileOutputStream fos = new FileOutputStream(sstFilePath);
-             BufferedOutputStream bos = new BufferedOutputStream(fos);
-             KVIndexSSTWriter writer = new KVIndexSSTWriter(bos)) {
+                BufferedOutputStream bos = new BufferedOutputStream(fos);
+                KVIndexSSTWriter writer = new KVIndexSSTWriter(bos)) {
             for (KVEntry entry : entries) {
                 byte[] key = KVIndexSSTWriter.encodeInt64Key(entry.rowId);
                 byte[] value = KVIndexSSTWriter.encodeRowValue(entry.values, valueColTypeNames);
