@@ -29,7 +29,6 @@ import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.DataType;
 import org.apache.paimon.types.DataTypeRoot;
 import org.apache.paimon.types.RowType;
-import org.apache.paimon.utils.SnapshotManager;
 
 import java.io.BufferedOutputStream;
 import java.io.File;
@@ -91,14 +90,13 @@ public class KVIndexBuildExecutor {
 
         // 2. Get latest snapshot id
         long snapshotId = -1;
-        if (paimonTable instanceof DataTable) {
-            DataTable dataTable = (DataTable) paimonTable;
-            SnapshotManager snapshotManager = new SnapshotManager(
-                    dataTable.fileIO(), dataTable.location());
-            Long latestId = snapshotManager.latestSnapshotId();
-            if (latestId != null) {
-                snapshotId = latestId;
+        try {
+            java.util.Optional<org.apache.paimon.Snapshot> latestSnapshot = paimonTable.latestSnapshot();
+            if (latestSnapshot.isPresent()) {
+                snapshotId = latestSnapshot.get().id();
             }
+        } catch (Exception e) {
+            LOG.warn("Failed to get latest snapshot id, proceeding with -1", e);
         }
 
         // 3. Get table schema and resolve column indices
