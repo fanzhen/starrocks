@@ -59,13 +59,13 @@ StatusOr<ChunkUniquePtr> KVIndexReader::multi_get(const std::vector<int64_t>& ke
     ChunkUniquePtr result = ChunkHelper::new_chunk(_value_schema, num_keys);
 
     // Make all columns nullable and fill with NULLs initially
+    // Use mutable_columns() to get mutable access (ColumnPtr = ImmutPtr<const Column>)
+    auto mcols = result->mutable_columns();
     for (size_t col_idx = 0; col_idx < num_value_cols; col_idx++) {
-        auto& col = result->get_column_by_index(col_idx);
-        col->resize(num_keys);
-        // If the column is nullable, set all rows to NULL initially
-        if (col->is_nullable()) {
-            auto* nullable = down_cast<NullableColumn*>(col.get());
-            nullable->null_column()->get_data().assign(num_keys, 1);
+        mcols[col_idx]->resize(num_keys);
+        if (mcols[col_idx]->is_nullable()) {
+            auto* nullable = down_cast<NullableColumn*>(mcols[col_idx].get());
+            nullable->null_column_data().assign(num_keys, 1);
             nullable->set_has_null(true);
         }
     }
@@ -129,8 +129,7 @@ StatusOr<ChunkUniquePtr> KVIndexReader::multi_get(const std::vector<int64_t>& ke
 
         // Copy decoded values into the result chunk at the original position
         for (size_t col_idx = 0; col_idx < num_value_cols; col_idx++) {
-            auto& result_col = result->get_column_by_index(col_idx);
-            result_col->update_rows(*tmp_columns[col_idx], &sorted_pos);
+            mcols[col_idx]->update_rows(*tmp_columns[col_idx], &sorted_pos);
         }
 
         (*found_mask)[sorted_pos] = true;
