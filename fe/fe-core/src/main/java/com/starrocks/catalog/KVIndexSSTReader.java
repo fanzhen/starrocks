@@ -253,7 +253,13 @@ public class KVIndexSSTReader implements Closeable {
     }
 
     private static Object deserializeColumn(byte[] data, int[] pos, int size, String type) {
-        ByteBuffer bb = ByteBuffer.wrap(data, pos[0], size).order(ByteOrder.LITTLE_ENDIAN);
+        // Skip null flag byte (0x00 = not null, matching NullableColumn::serialize format)
+        int nullFlag = data[pos[0]] & 0xFF;
+        if (nullFlag != 0) {
+            pos[0] += size;
+            return null;
+        }
+        ByteBuffer bb = ByteBuffer.wrap(data, pos[0] + 1, size - 1).order(ByteOrder.LITTLE_ENDIAN);
         Object result;
         switch (type.toUpperCase()) {
             case "INT":

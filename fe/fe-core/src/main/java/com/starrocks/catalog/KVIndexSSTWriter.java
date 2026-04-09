@@ -220,7 +220,12 @@ public class KVIndexSSTWriter implements Closeable {
                 offsets[i] = 0;
                 colData[i] = new byte[0];
             } else {
-                colData[i] = serializeColumn(values[i], types[i]);
+                byte[] rawData = serializeColumn(values[i], types[i]);
+                // Prepend null flag byte (0x00 = not null) to match
+                // NullableColumn::serialize() format expected by BE decoder
+                colData[i] = new byte[1 + rawData.length];
+                colData[i][0] = 0x00; // not null
+                System.arraycopy(rawData, 0, colData[i], 1, rawData.length);
                 offsets[i] = colData[i].length;
             }
         }
