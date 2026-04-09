@@ -147,7 +147,8 @@ StatusOr<ChunkUniquePtr> KVIndexReader::scan_all() {
     iter->SeekToFirst();
     while (iter->Valid()) {
         Slice key_slice = iter->key();
-        int64_t row_id = encoding_utils::decode_integral<int64_t>(key_slice);
+        int64_t row_id = 0;
+        encoding_utils::decode_integral(&key_slice, &row_id);
         keys.push_back(row_id);
         iter->Next();
     }

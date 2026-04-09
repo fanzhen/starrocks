@@ -50,7 +50,7 @@ StatusOr<ChunkPtr> KVIndexScanOperator::pull_chunk(RuntimeState* state) {
         auto field = std::make_shared<Field>(static_cast<ColumnId>(i), _value_column_names[i], ltype, true);
         fields.push_back(field);
     }
-    Schema value_schema(std::move(fields));
+    Schema value_schema(std::move(fields), KeysType::DUP_KEYS, std::vector<ColumnId>{});
 
     // Open SSTable file
     ASSIGN_OR_RETURN(auto file, fs::new_random_access_file(_sst_file_path));
