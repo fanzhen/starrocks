@@ -65,6 +65,7 @@ import com.starrocks.catalog.Function;
 import com.starrocks.catalog.Index;
 import com.starrocks.catalog.InternalCatalog;
 import com.starrocks.catalog.KVIndexMetadataManager;
+import com.starrocks.catalog.KVIndexSSTReader;
 import com.starrocks.catalog.LocalTablet;
 import com.starrocks.catalog.MaterializedIndex;
 import com.starrocks.catalog.MaterializedIndex.IndexExtState;
@@ -154,6 +155,7 @@ import com.starrocks.sql.analyzer.Authorizer;
 import com.starrocks.sql.analyzer.SemanticException;
 import com.starrocks.sql.ast.AdminShowAutomatedSnapshotStmt;
 import com.starrocks.sql.ast.AdminShowConfigStmt;
+import com.starrocks.sql.ast.AdminShowKVIndexDataStmt;
 import com.starrocks.sql.ast.AdminShowReplicaDistributionStmt;
 import com.starrocks.sql.ast.AdminShowReplicaStatusStmt;
 import com.starrocks.sql.ast.AdminShowTabletStatusStmt;
@@ -2436,6 +2438,57 @@ public class ShowExecutor {
                 throw new SemanticException(e.getMessage());
             }
             return new ShowResultSet(showResultMetaFactory.getMetadata(statement), results);
+        }
+
+        @Override
+        public ShowResultSet visitAdminShowKVIndexDataStatement(AdminShowKVIndexDataStmt statement,
+                                                                ConnectContext context) {
+            String catalogName = statement.getCatalogName();
+            String dbName = statement.getDbName();
+            String tableName = statement.getTableName();
+            String indexName = statement.getIndexName();
+
+            KVIndexMetadataManager kvMgr = GlobalStateMgr.getCurrentState().getKVIndexMetadataManager();
+            KVIndexMetadataManager.KVIndexMeta meta = kvMgr.getIndexMeta(catalogName, dbName, tableName, indexName);
+            if (meta == null) {
+                throw new SemanticException("KV index '" + indexName + "' not found on "
+                        + catalogName + "." + dbName + "." + tableName);
+            }
+            if (meta.getBuildState() != KVIndexMetadataManager.BuildState.READY) {
+                throw new SemanticException("KV index '" + indexName + "' is not ready (state="
+                        + meta.getBuildState() + ")");
+            }
+
+            String[] columnNames = meta.getColumnNames();
+            String[] columnTypes = meta.getColumnTypes();
+            if (columnNames == null || columnTypes == null) {
+                throw new SemanticException("KV index '" + indexName + "' has no column metadata");
+            }
+
+            // Build dynamic metadata: ROW_ID + value columns
+            ShowResultSetMetaData.Builder metaBuilder = ShowResultSetMetaData.builder();
+            metaBuilder.addColumn(new Column("ROW_ID", TypeFactory.createVarcharType(30)));
+            for (String colName : columnNames) {
+                metaBuilder.addColumn(new Column(colName, TypeFactory.createVarcharType(100)));
+            }
+
+            // Read SSTable data
+            List<List<String>> rows = new ArrayList<>();
+            try (KVIndexSSTReader reader = KVIndexSSTReader.open(meta.getSstFilePath())) {
+                List<KVIndexSSTReader.KVEntry> entries = reader.readAll(columnNames, columnTypes);
+                for (KVIndexSSTReader.KVEntry entry : entries) {
+                    List<String> row = new ArrayList<>();
+                    row.add(String.valueOf(entry.rowId));
+                    for (Object val : entry.values) {
+                        row.add(val == null ? "NULL" : val.toString());
+                    }
+                    rows.add(row);
+                }
+            } catch (Exception e) {
+                throw new SemanticException("Failed to read KV index data: " + e.getMessage());
+            }
+
+            return new ShowResultSet(metaBuilder.build(), rows);
         }
 
         @Override

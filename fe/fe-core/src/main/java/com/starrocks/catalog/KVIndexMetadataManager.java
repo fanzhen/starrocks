@@ -52,6 +52,8 @@ public class KVIndexMetadataManager {
         private volatile long buildStartTimeMs;
         private volatile long buildEndTimeMs;
         private volatile String manifestPath;
+        private volatile String[] columnNames;
+        private volatile String[] columnTypes;
 
         public KVIndexMeta(String indexName, List<ColumnId> columns, IndexDef.IndexType indexType,
                            String comment, Map<String, String> properties) {
@@ -152,6 +154,22 @@ public class KVIndexMetadataManager {
 
         public void setManifestPath(String manifestPath) {
             this.manifestPath = manifestPath;
+        }
+
+        public String[] getColumnNames() {
+            return columnNames;
+        }
+
+        public void setColumnNames(String[] columnNames) {
+            this.columnNames = columnNames;
+        }
+
+        public String[] getColumnTypes() {
+            return columnTypes;
+        }
+
+        public void setColumnTypes(String[] columnTypes) {
+            this.columnTypes = columnTypes;
         }
 
         public Index toIndex() {

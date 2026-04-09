@@ -36,6 +36,7 @@ import com.starrocks.common.proc.TransProcDir;
 import com.starrocks.sql.ast.AdminRepairTableStmt;
 import com.starrocks.sql.ast.AdminShowAutomatedSnapshotStmt;
 import com.starrocks.sql.ast.AdminShowConfigStmt;
+import com.starrocks.sql.ast.AdminShowKVIndexDataStmt;
 import com.starrocks.sql.ast.AdminShowReplicaDistributionStmt;
 import com.starrocks.sql.ast.AdminShowReplicaStatusStmt;
 import com.starrocks.sql.ast.AdminShowTabletStatusStmt;
@@ -1200,6 +1201,15 @@ public class ShowResultMetaFactory implements AstVisitorExtendInterface<ShowResu
         return ShowResultSetMetaData.builder()
                 .addColumn(new Column("Group Provider", TypeFactory.createVarcharType(60)))
                 .addColumn(new Column("Create Group Provider", TypeFactory.createVarcharType(500)))
+                .build();
+    }
+
+    @Override
+    public ShowResultSetMetaData visitAdminShowKVIndexDataStatement(AdminShowKVIndexDataStmt statement,
+                                                                    Void context) {
+        // Dynamic columns — actual metadata built in ShowExecutor
+        return ShowResultSetMetaData.builder()
+                .addColumn(new Column("ROW_ID", TypeFactory.createVarcharType(30)))
                 .build();
     }
 

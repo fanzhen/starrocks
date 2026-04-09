@@ -76,6 +76,7 @@ import com.starrocks.sql.ast.AdminSetPartitionVersionStmt;
 import com.starrocks.sql.ast.AdminSetReplicaStatusStmt;
 import com.starrocks.sql.ast.AdminShowAutomatedSnapshotStmt;
 import com.starrocks.sql.ast.AdminShowConfigStmt;
+import com.starrocks.sql.ast.AdminShowKVIndexDataStmt;
 import com.starrocks.sql.ast.AdminShowReplicaDistributionStmt;
 import com.starrocks.sql.ast.AdminShowReplicaStatusStmt;
 import com.starrocks.sql.ast.AdminShowTabletStatusStmt;
@@ -2869,6 +2870,31 @@ public class AstBuilder extends com.starrocks.sql.parser.StarRocksBaseVisitor<Pa
     public ParseNode visitAdminShowAutomatedSnapshotStatement(
             com.starrocks.sql.parser.StarRocksParser.AdminShowAutomatedSnapshotStatementContext context) {
         return new AdminShowAutomatedSnapshotStmt(createPos(context));
+    }
+
+    @Override
+    public ParseNode visitAdminShowKVIndexDataStatement(
+            com.starrocks.sql.parser.StarRocksParser.AdminShowKVIndexDataStatementContext context) {
+        QualifiedName qualifiedName = getQualifiedName(context.qualifiedName());
+        List<String> parts = qualifiedName.getParts();
+        String catalogName;
+        String dbName;
+        String tableName;
+        if (parts.size() == 3) {
+            catalogName = parts.get(0);
+            dbName = parts.get(1);
+            tableName = parts.get(2);
+        } else if (parts.size() == 2) {
+            catalogName = null;
+            dbName = parts.get(0);
+            tableName = parts.get(1);
+        } else {
+            catalogName = null;
+            dbName = null;
+            tableName = parts.get(0);
+        }
+        String indexName = ((Identifier) visit(context.identifier())).getValue();
+        return new AdminShowKVIndexDataStmt(catalogName, dbName, tableName, indexName, createPos(context));
     }
 
     @Override

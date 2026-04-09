@@ -32,6 +32,7 @@ import com.starrocks.sql.ast.AdminSetPartitionVersionStmt;
 import com.starrocks.sql.ast.AdminSetReplicaStatusStmt;
 import com.starrocks.sql.ast.AdminShowAutomatedSnapshotStmt;
 import com.starrocks.sql.ast.AdminShowConfigStmt;
+import com.starrocks.sql.ast.AdminShowKVIndexDataStmt;
 import com.starrocks.sql.ast.AdminShowReplicaDistributionStmt;
 import com.starrocks.sql.ast.AdminShowReplicaStatusStmt;
 import com.starrocks.sql.ast.AdminShowTabletStatusStmt;
@@ -731,6 +732,12 @@ public class RedirectStatus {
             } else {
                 return RedirectStatus.NO_FORWARD;
             }
+        }
+
+        @Override
+        public RedirectStatus visitAdminShowKVIndexDataStatement(AdminShowKVIndexDataStmt statement,
+                                                                 Void context) {
+            return RedirectStatus.NO_FORWARD;
         }
 
         @Override

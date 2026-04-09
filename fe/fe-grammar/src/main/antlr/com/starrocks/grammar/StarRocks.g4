@@ -121,6 +121,7 @@ statement
     | adminSetReplicaStatusStatement
     | adminShowConfigStatement
     | adminShowAutomatedSnapshotStatement
+    | adminShowKVIndexDataStatement
     | adminShowReplicaDistributionStatement
     | adminShowReplicaStatusStatement
     | adminShowTabletStatusStatement
@@ -783,6 +784,10 @@ adminShowConfigStatement
 
 adminShowAutomatedSnapshotStatement
     : ADMIN SHOW AUTOMATED CLUSTER SNAPSHOT
+    ;
+
+adminShowKVIndexDataStatement
+    : ADMIN SHOW KV_INDEX_DATA FROM qualifiedName INDEX identifier
     ;
 
 adminShowReplicaDistributionStatement
@@ -3318,7 +3323,7 @@ nonReserved
     | VALUE | VARBINARY | VARIABLES | VIEW | VIEWS | VERBOSE | VERSION | VOLUME | VOLUMES
     | WARNINGS | WEEK | WHITELIST | WORK | WRITE  | WAREHOUSE | WAREHOUSES
     | YEAR
-    | DOTDOTDOT | NGRAMBF | VECTOR | KV
+    | DOTDOTDOT | NGRAMBF | VECTOR | KV | KV_INDEX_DATA
     | FIELD
     | ARRAY_ELEMENT
     | PERSISTENT

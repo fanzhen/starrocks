@@ -29,6 +29,7 @@ import com.starrocks.sql.ast.AdminSetConfigStmt;
 import com.starrocks.sql.ast.AdminSetPartitionVersionStmt;
 import com.starrocks.sql.ast.AdminSetReplicaStatusStmt;
 import com.starrocks.sql.ast.AdminShowAutomatedSnapshotStmt;
+import com.starrocks.sql.ast.AdminShowKVIndexDataStmt;
 import com.starrocks.sql.ast.AdminShowReplicaDistributionStmt;
 import com.starrocks.sql.ast.AdminShowReplicaStatusStmt;
 import com.starrocks.sql.ast.AdminShowTabletStatusStmt;
@@ -98,6 +99,15 @@ public class AdminStmtAnalyzer {
             adminSetReplicaStatusStmt.setTabletId(tabletId);
             adminSetReplicaStatusStmt.setBackendId(backendId);
             adminSetReplicaStatusStmt.setStatus(status);
+            return null;
+        }
+
+        @Override
+        public Void visitAdminShowKVIndexDataStatement(
+                AdminShowKVIndexDataStmt stmt, ConnectContext session) {
+            if (Strings.isNullOrEmpty(stmt.getIndexName())) {
+                throw new SemanticException("INDEX name is required", stmt.getPos());
+            }
             return null;
         }
 

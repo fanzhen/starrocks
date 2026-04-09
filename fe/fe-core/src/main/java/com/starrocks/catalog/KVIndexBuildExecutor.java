@@ -193,6 +193,8 @@ public class KVIndexBuildExecutor {
                 sstFilePath, valueColumnNames, valueColTypeNames);
 
         // 9. Update metadata to READY
+        meta.setColumnNames(valueColumnNames.toArray(new String[0]));
+        meta.setColumnTypes(valueColTypeNames);
         meta.setBuildState(KVIndexMetadataManager.BuildState.READY);
         meta.setBaseSnapshotId(snapshotId);
         meta.setSstFilePath(sstFilePath);
