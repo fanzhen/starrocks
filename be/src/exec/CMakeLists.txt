@@ -38,6 +38,7 @@ set(EXEC_FILES
     fetch_node.cpp
     lookup_node.cpp
     capture_version_node.cpp
+    kv_index_scan_node.cpp
     data_sink.cpp
     empty_set_node.cpp
     exec_factory.cpp
@@ -211,6 +212,7 @@ set(EXEC_FILES
     sorting/sort_permute.cpp
     connector_scan_node.cpp
     pipeline/capture_version_operator.cpp
+    pipeline/kv_index_scan_operator.cpp
     pipeline/exchange/exchange_merge_sort_source_operator.cpp
     pipeline/exchange/exchange_parallel_merge_source_operator.cpp
     pipeline/exchange/exchange_sink_operator.cpp

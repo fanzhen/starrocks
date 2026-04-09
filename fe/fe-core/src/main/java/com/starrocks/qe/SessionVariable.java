@@ -644,6 +644,8 @@ public class SessionVariable implements Serializable, Writable, Cloneable {
 
     public static final String WINDOW_PARTITION_MODE = "window_partition_mode";
 
+    public static final String ENABLE_KV_INDEX_SCAN = "enable_kv_index_scan";
+
     public static final String ENABLE_SCAN_DATACACHE = "enable_scan_datacache";
     public static final String ENABLE_POPULATE_DATACACHE = "enable_populate_datacache";
     public static final String POPULATE_DATACACHE_MODE = "populate_datacache_mode";
@@ -2578,6 +2580,9 @@ public class SessionVariable implements Serializable, Writable, Cloneable {
         return enableQueryQueue;
     }
 
+    @VariableMgr.VarAttr(name = ENABLE_KV_INDEX_SCAN)
+    private boolean enableKvIndexScan = false;
+
     @VariableMgr.VarAttr(name = ENABLE_SCAN_DATACACHE, alias = ENABLE_SCAN_BLOCK_CACHE)
     private boolean enableScanDataCache = true;
 
@@ -3534,6 +3539,10 @@ public class SessionVariable implements Serializable, Writable, Cloneable {
 
     @VarAttr(name = ENABLE_STRICT_TYPE, flag = VariableMgr.INVISIBLE)
     private boolean enableStrictType = false;
+
+    public boolean isEnableKvIndexScan() {
+        return enableKvIndexScan;
+    }
 
     public boolean isEnableScanDataCache() {
         return enableScanDataCache;

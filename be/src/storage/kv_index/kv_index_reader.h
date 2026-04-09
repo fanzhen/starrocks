@@ -49,6 +49,9 @@ public:
     // not-found rows contain NULLs.
     StatusOr<ChunkUniquePtr> multi_get(const std::vector<int64_t>& keys, std::vector<bool>* found_mask);
 
+    // Full scan: iterate through all entries and return a single chunk.
+    StatusOr<ChunkUniquePtr> scan_all();
+
 private:
     KVIndexReader() = default;
 

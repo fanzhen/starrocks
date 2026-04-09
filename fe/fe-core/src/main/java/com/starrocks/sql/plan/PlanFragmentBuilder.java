@@ -21,6 +21,7 @@ import com.starrocks.analysis.RowPositionDescriptor;
 import com.starrocks.catalog.AggregateFunction;
 import com.starrocks.catalog.ColocateTableIndex;
 import com.starrocks.catalog.Column;
+import com.starrocks.catalog.KVIndexMetadataManager;
 import com.starrocks.catalog.ColumnAccessPath;
 import com.starrocks.catalog.Function;
 import com.starrocks.catalog.FunctionSet;
@@ -83,6 +84,7 @@ import com.starrocks.planner.IcebergScanNode;
 import com.starrocks.planner.IntersectNode;
 import com.starrocks.planner.JDBCScanNode;
 import com.starrocks.planner.JoinNode;
+import com.starrocks.planner.KVIndexScanNode;
 import com.starrocks.planner.KuduScanNode;
 import com.starrocks.planner.LookUpNode;
 import com.starrocks.planner.MergeJoinNode;
@@ -1407,6 +1409,15 @@ public class PlanFragmentBuilder {
             PhysicalPaimonScanOperator node = (PhysicalPaimonScanOperator) optExpression.getOp();
 
             Table referenceTable = node.getTable();
+
+            // === KV Index rewrite check ===
+            if (context.getConnectContext().getSessionVariable().isEnableKvIndexScan()) {
+                PlanFragment kvFragment = tryCreateKVIndexScanFragment(optExpression, node, referenceTable, context);
+                if (kvFragment != null) {
+                    return kvFragment;
+                }
+            }
+
             context.getDescTbl().addReferencedTable(referenceTable);
             TupleDescriptor tupleDescriptor = context.getDescTbl().createTupleDescriptor();
             tupleDescriptor.setTable(referenceTable);
@@ -1446,6 +1457,74 @@ public class PlanFragmentBuilder {
 
             PlanFragment fragment =
                     new PlanFragment(context.getNextFragmentId(), paimonScanNode, DataPartition.RANDOM);
+            context.getFragments().add(fragment);
+            return fragment;
+        }
+
+        private PlanFragment tryCreateKVIndexScanFragment(OptExpression optExpression,
+                                                           PhysicalPaimonScanOperator node,
+                                                           Table table, ExecPlan context) {
+            if (!(table instanceof com.starrocks.catalog.PaimonTable)) {
+                return null;
+            }
+            com.starrocks.catalog.PaimonTable paimonTable = (com.starrocks.catalog.PaimonTable) table;
+            String catalogName = paimonTable.getCatalogName();
+            String dbName = paimonTable.getCatalogDBName();
+            String tableName = paimonTable.getCatalogTableName();
+
+            KVIndexMetadataManager kvMgr = GlobalStateMgr.getCurrentState().getKVIndexMetadataManager();
+            List<KVIndexMetadataManager.KVIndexMeta> metas = kvMgr.getIndexMetas(catalogName, dbName, tableName);
+            if (metas.isEmpty()) {
+                return null;
+            }
+
+            // Find a READY index whose value columns cover all output columns
+            KVIndexMetadataManager.KVIndexMeta readyMeta = null;
+            for (KVIndexMetadataManager.KVIndexMeta meta : metas) {
+                if (meta.getBuildState() == KVIndexMetadataManager.BuildState.READY
+                        && meta.getColumnNames() != null && meta.getSstFilePath() != null) {
+                    readyMeta = meta;
+                    break;
+                }
+            }
+            if (readyMeta == null) {
+                return null;
+            }
+
+            // Check that all output columns are covered by KV index value columns
+            java.util.Set<String> kvColumnSet = new java.util.HashSet<>();
+            for (String colName : readyMeta.getColumnNames()) {
+                kvColumnSet.add(colName.toLowerCase());
+            }
+            for (Map.Entry<ColumnRefOperator, Column> entry : node.getColRefToColumnMetaMap().entrySet()) {
+                if (!kvColumnSet.contains(entry.getValue().getName().toLowerCase())) {
+                    return null;
+                }
+            }
+
+            // Build value column names/types lists matching the KV index column order
+            List<String> valueColumnNames = new java.util.ArrayList<>();
+            List<String> valueColumnTypes = new java.util.ArrayList<>();
+            for (int i = 0; i < readyMeta.getColumnNames().length; i++) {
+                valueColumnNames.add(readyMeta.getColumnNames()[i]);
+                valueColumnTypes.add(readyMeta.getColumnTypes()[i]);
+            }
+
+            // Create tuple descriptor and slots
+            context.getDescTbl().addReferencedTable(table);
+            TupleDescriptor tupleDescriptor = context.getDescTbl().createTupleDescriptor();
+            tupleDescriptor.setTable(table);
+            prepareContextSlots(node, context, tupleDescriptor);
+            tupleDescriptor.computeMemLayout();
+
+            KVIndexScanNode kvScanNode = new KVIndexScanNode(
+                    context.getNextNodeId(), tupleDescriptor,
+                    readyMeta.getSstFilePath(), valueColumnNames, valueColumnTypes);
+            kvScanNode.setLimit(node.getLimit());
+            kvScanNode.computeStatistics(optExpression.getStatistics());
+
+            PlanFragment fragment = new PlanFragment(
+                    context.getNextFragmentId(), kvScanNode, DataPartition.RANDOM);
             context.getFragments().add(fragment);
             return fragment;
         }

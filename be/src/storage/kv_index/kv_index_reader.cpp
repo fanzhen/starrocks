@@ -138,4 +138,28 @@ StatusOr<ChunkUniquePtr> KVIndexReader::multi_get(const std::vector<int64_t>& ke
     return result;
 }
 
+StatusOr<ChunkUniquePtr> KVIndexReader::scan_all() {
+    sstable::ReadOptions read_options;
+    std::unique_ptr<sstable::Iterator> iter(_table->NewIterator(read_options));
+
+    // Collect all keys
+    std::vector<int64_t> keys;
+    iter->SeekToFirst();
+    while (iter->Valid()) {
+        Slice key_slice = iter->key();
+        int64_t row_id = encoding_utils::decode_integral<int64_t>(key_slice);
+        keys.push_back(row_id);
+        iter->Next();
+    }
+    RETURN_IF_ERROR(iter->status());
+
+    if (keys.empty()) {
+        return ChunkHelper::new_chunk(_value_schema, 0);
+    }
+
+    // Use multi_get for actual data retrieval
+    std::vector<bool> found_mask;
+    return multi_get(keys, &found_mask);
+}
+
 } // namespace starrocks

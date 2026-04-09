@@ -89,7 +89,8 @@ enum TPlanNodeType {
   FETCH_NODE,
   LOOKUP_NODE,
   BENCHMARK_SCAN_NODE,
-  LAKE_CACHE_STATS_SCAN_NODE
+  LAKE_CACHE_STATS_SCAN_NODE,
+  KV_INDEX_SCAN_NODE
 }
 
 // phases of an execution node
@@ -1447,6 +1448,13 @@ struct TLookUpNode {
   1: optional map<Types.TTupleId, Descriptors.TRowPositionDescriptor> row_pos_descs;
 }
 
+struct TKVIndexScanNode {
+    1: optional Types.TTupleId tuple_id
+    2: optional string sst_file_path
+    3: optional list<string> value_column_names
+    4: optional list<string> value_column_types
+}
+
 // This is essentially a union of all messages corresponding to subclasses
 // of PlanNode.
 struct TPlanNode {
@@ -1531,6 +1539,8 @@ struct TPlanNode {
   84: optional TBenchmarkScanNode benchmark_scan_node;
 
   85: optional TCacheStatsScanNode cache_stats_scan_node;
+
+  86: optional TKVIndexScanNode kv_index_scan_node;
 }
 
 // A flattened representation of a tree of PlanNodes, obtained by depth-first

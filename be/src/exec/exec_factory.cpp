@@ -57,6 +57,7 @@
 #include "exec/except_node.h"
 #include "exec/exchange_node.h"
 #include "exec/fetch_node.h"
+#include "exec/kv_index_scan_node.h"
 #include "exec/file_scan_node.h"
 #include "exec/hash_join_node.h"
 #include "exec/intersect_node.h"
@@ -345,6 +346,10 @@ Status ExecFactory::create_vectorized_node(RuntimeState* state, ObjectPool* pool
     }
     case TPlanNodeType::LOOKUP_NODE: {
         *node = pool->add(new LookUpNode(pool, tnode, descs));
+        return Status::OK();
+    }
+    case TPlanNodeType::KV_INDEX_SCAN_NODE: {
+        *node = pool->add(new KVIndexScanNode(pool, tnode, descs));
         return Status::OK();
     }
     case TPlanNodeType::LAKE_CACHE_STATS_SCAN_NODE: {
