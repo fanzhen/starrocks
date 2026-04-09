@@ -1522,6 +1522,7 @@ public class PlanFragmentBuilder {
                     readyMeta.getSstFilePath(), valueColumnNames, valueColumnTypes);
             kvScanNode.setLimit(node.getLimit());
             kvScanNode.computeStatistics(optExpression.getStatistics());
+            currentExecGroup.add(kvScanNode, true);
 
             PlanFragment fragment = new PlanFragment(
                     context.getNextFragmentId(), kvScanNode, DataPartition.RANDOM);
