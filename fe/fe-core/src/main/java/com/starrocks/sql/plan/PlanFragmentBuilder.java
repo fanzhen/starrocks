@@ -1525,7 +1525,7 @@ public class PlanFragmentBuilder {
             currentExecGroup.add(kvScanNode, true);
 
             PlanFragment fragment = new PlanFragment(
-                    context.getNextFragmentId(), kvScanNode, DataPartition.RANDOM);
+                    context.getNextFragmentId(), kvScanNode, DataPartition.UNPARTITIONED);
             context.getFragments().add(fragment);
             return fragment;
         }
