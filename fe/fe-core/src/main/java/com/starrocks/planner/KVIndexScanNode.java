@@ -14,7 +14,6 @@
 
 package com.starrocks.planner;
 
-import com.starrocks.analysis.TupleDescriptor;
 import com.starrocks.thrift.TExplainLevel;
 import com.starrocks.thrift.TKVIndexScanNode;
 import com.starrocks.thrift.TPlanNode;
