@@ -119,6 +119,11 @@ public class KVIndexSSTWriter implements Closeable {
         flush();
         closed = true;
 
+        // Save pending data block handle before writing non-data blocks,
+        // because writeRawBlock overwrites pendingHandleOffset/Size.
+        long savedHandleOffset = pendingHandleOffset;
+        long savedHandleSize = pendingHandleSize;
+
         // Write filter block (no compression)
         byte[] filterData = filterBlock.finish();
         long filterOffset = fileOffset;
@@ -134,10 +139,10 @@ public class KVIndexSSTWriter implements Closeable {
         long metaIndexSize = metaIndexData.length;
         writeRawBlock(metaIndexData, COMPRESSION_NONE);
 
-        // Write index block
+        // Write index block (use saved handle, not the overwritten one)
         if (pendingIndexEntry) {
             // FindShortSuccessor: for binary keys, just use lastKey as-is
-            byte[] handleEncoding = encodeBlockHandle(pendingHandleOffset, pendingHandleSize);
+            byte[] handleEncoding = encodeBlockHandle(savedHandleOffset, savedHandleSize);
             indexBlock.add(lastKey, handleEncoding);
             pendingIndexEntry = false;
         }
