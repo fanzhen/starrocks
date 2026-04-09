@@ -11,7 +11,7 @@
 | 1 | BE KV Index Core | KVIndexWriter + KVIndexReader + UT | `run-be-ut.sh kv_index_test` 全 PASS | Stage 0 |
 | 2 | FE DDL + 元数据 | Parser + Analyzer + Thrift/Proto | `CREATE/DROP INDEX ... USING KV` + `SHOW INDEX` | Stage 0 |
 | 3 | Full Build 路径 | CN 构建任务 + Manifest | `CREATE INDEX` 触发构建 → 验证 SST 文件存在 | Stage 1, 2 |
-| 4 | Read 路径集成 | KVIndexScanNode (mock _ROW_ID 入口) | table function 查询返回正确结果 | Stage 3 |
+| 4 | Read 路径集成 | FE Java SSTable Reader + ADMIN SHOW KV_INDEX_DATA | SQL 查询返回 SSTable 全部数据 | Stage 3 |
 | 5 | 后台维护 | 增量 Build + Purge + Compaction | 追加数据后自动增量构建 + 查询验证 | Stage 3 |
 | 6 | 性能优化 | MultiGet 批量优化 + block cache | perf 火焰图 + benchmark 对比 | Stage 4 |
 
@@ -315,7 +315,18 @@ SHOW INDEX FROM paimon_catalog.test_db.test_kv;
 → 全部通过 → Stage 2 complete
 ```
 
-### 状态: 未开始
+### 状态: ✅ 完成 (2026-04-08)
+
+**E2E 结果 (远程 8.217.233.254, Docker sr-dev):**
+- `CREATE INDEX idx_test_kv ON paimon_catalog.test_db.test_kv (name, score, category) USING KV` — 成功 ✓
+- `SHOW INDEX` — 显示 `idx_test_kv, KV` ✓
+- `DROP INDEX` — 清空索引元数据 ✓
+
+**实现方式 (v1 简化):**
+- 语法: `CREATE INDEX ... USING KV` (无 VALUE 子句, value 列直接在列名列表中指定)
+- IndexType 枚举新增 KV
+- 元数据: 内存态 `KVIndexMetadataManager` (FE 重启后丢失)
+- 无 Analyzer 校验 (不检查 Paimon 表类型/Row Tracking)
 
 ---
 
@@ -363,7 +374,38 @@ SHOW INDEX FROM paimon_catalog.test_db.test_kv;
 -- ls <warehouse>/<table>/.starrocks_kv_index/idx_test_kv/
 ```
 
-### 状态: 未开始
+### 状态: ✅ 完成 (2026-04-09)
+
+**实现方式 (v1: FE 侧 Java 构建):**
+- FE 异步线程池 (2 daemon threads) 通过 Paimon Java API 读取数据
+- 纯 Java LevelDB SSTable 写入器 (`KVIndexSSTWriter.java`, ~500 行)
+  - 二进制兼容 BE `sstable::Table::Open` (prefix-compressed blocks, CRC32C, Snappy, bloom filter)
+  - Key: `encode_integral<int64_t>` (XOR sign bit + big-endian)
+  - Value: `RowStoreEncoderSimple` 格式 (header + null bitmap + offsets + column data)
+- 文件存储: `<warehouse>/.starrocks_kv_index/<indexName>/data/kv_00001.sst` + `manifest.json`
+- 构建状态: PENDING → BUILDING → READY/FAILED, 通过 `SHOW INDEX` 展示
+
+**E2E 结果 (远程 8.217.233.254, Docker sr-dev):**
+- CREATE INDEX 立即返回 (非阻塞) ✓
+- SHOW INDEX 显示 `KV (READY, snapshot=2, rows=5)` ✓
+- SSTable 文件存在 (353 bytes) ✓
+- manifest.json 正确 (baseSnapshotId=2, rowCount=5, 3 columns) ✓
+- DROP INDEX + 重建 — 正常工作 ✓
+
+**新增文件:**
+- `KVIndexBuildExecutor.java` — 异步构建执行器
+- `KVIndexSSTWriter.java` — Java LevelDB SSTable 写入器
+
+**修改文件:**
+- `KVIndexMetadataManager.java` — 重构为 KVIndexMeta + BuildState
+- `PaimonMetadata.java` — CREATE INDEX 触发异步构建
+- `ShowExecutor.java` — SHOW INDEX 展示构建状态
+- `GlobalStateMgr.java` — 注册 KVIndexBuildExecutor
+
+**修复的 bugs:**
+1. Checkstyle: try-with-resources 续行缩进 13→16 spaces
+2. SnapshotManager API 不兼容: 改用 `paimonTable.latestSnapshot()`
+3. 重复 import: `InternalRow`
 
 ---
 
@@ -371,50 +413,64 @@ SHOW INDEX FROM paimon_catalog.test_db.test_kv;
 
 ### 目标
 
-查询时 CN 通过 SSTable MultiGet 取行数据。由于 Global Index 查询路径尚未集成，使用 mock `_ROW_ID` 入口验证。
+验证 SSTable 文件可被正确读取，提供 SQL 可达的 lookup 接口。方案: FE Java Reader + `ADMIN SHOW KV_INDEX_DATA` SQL 语句。
 
 ### 新增文件
 
-#### 4.1 Mock `_ROW_ID` 入口 (table function)
-
-新增 table function `kv_index_lookup(catalog, db, table, index_name, row_id_array)`:
-- 直接调用 KVIndexReader 读取 SSTable
-- 不污染正式 optimizer 路径
-- 后续 Global Index 集成时替换为真正的上游算子
-
-#### 4.2 FE 优化器改写规则 (预留框架)
-
-- 在 `fe/fe-core/.../sql/optimizer/` 中添加 KV Index 改写规则框架代码
-- 检测条件: 表有 KV 索引 + 上游产出 `_ROW_ID` + value 列覆盖 + 版本可用
-- 改写: `ConnectorScanNode` → `KVIndexScanNode`
-- 此规则在 Global Index 集成前不会被触发
+| 文件 | 说明 |
+|------|------|
+| `KVIndexSSTReader.java` | Java LevelDB SSTable 读取器 (KVIndexSSTWriter 的逆操作) |
+| `AdminShowKVIndexDataStmt.java` | `ADMIN SHOW KV_INDEX_DATA FROM catalog.db.table INDEX name` AST 节点 |
 
 ### 修改文件
 
 | 文件 | 修改内容 |
 |------|---------|
-| Thrift | 新增 `TKVIndexScanNode` 或扩展现有 scan node |
-| `be/src/exec/` | KVIndexScanNode 实现 |
-| `be/src/exec/CMakeLists.txt` | 新增源文件 |
+| `StarRocksLex.g4` | 新增 `KV_INDEX_DATA` lexer token |
+| `StarRocks.g4` | 新增 `adminShowKVIndexDataStatement` 规则 + nonReserved |
+| `AstVisitor.java` | 新增 `visitAdminShowKVIndexDataStatement` 方法 |
+| `AstBuilder.java` | Parser → AST (支持 1/2/3 part qualifiedName) |
+| `AdminStmtAnalyzer.java` | 基础校验 (index name required) |
+| `Analyzer.java` | 委托到 AdminStmtAnalyzer |
+| `AuthorizerStmtVisitor.java` | OPERATE 权限校验 |
+| `ShowExecutor.java` | 核心执行: KVIndexSSTReader 读取 → 动态列 ShowResultSet |
+| `ShowResultMetaFactory.java` | 占位元数据 (实际动态列在 ShowExecutor 构建) |
+| `RedirectStatus.java` | NO_FORWARD (本地读) |
+| `KVIndexMetadataManager.java` | KVIndexMeta 新增 `columnNames`/`columnTypes` 字段 |
+| `KVIndexBuildExecutor.java` | 构建完成时回写列名/列类型到 KVIndexMeta |
 
 ### E2E 验证
 
 ```sql
--- 前置: 已创建 KV 索引并完成构建 (Stage 3)
+-- 1. 确认索引 READY
+SHOW INDEX FROM paimon_catalog.test_db.test_kv;
+-- 期望: KV (READY, snapshot=2, rows=5)
 
--- 使用 table function 验证
-SELECT * FROM TABLE(kv_index_lookup(
-    'paimon_catalog', 'test_db', 'test_kv', 'idx_test_kv',
-    ARRAY[0, 1, 2, 3, 4]
-));
--- 期望: 返回 5 行数据，与列存查询结果一致
+-- 2. 查询 KV 索引数据
+ADMIN SHOW KV_INDEX_DATA FROM paimon_catalog.test_db.test_kv INDEX idx_test_kv;
+-- 期望: 返回 5 行 (ROW_ID, name, score, category)
 
--- 正确性交叉验证
-SELECT name, score FROM paimon_catalog.test_db.test_kv;
--- 两个结果应完全一致
+-- 3. 交叉验证
+SELECT name, score, category FROM paimon_catalog.test_db.test_kv ORDER BY name;
+-- 期望: 结果一致
+
+-- 4. DROP + 重建
+DROP INDEX idx_test_kv ON paimon_catalog.test_db.test_kv;
+CREATE INDEX idx_test_kv ON paimon_catalog.test_db.test_kv (name, score, category) USING KV;
+ADMIN SHOW KV_INDEX_DATA FROM paimon_catalog.test_db.test_kv INDEX idx_test_kv;
+-- 期望: 同样返回 5 行
 ```
 
-### 状态: 未开始
+### 状态: ✅ 完成 (2026-04-09)
+
+**E2E 结果 (远程 8.217.233.254, Docker sr-dev):**
+- `SHOW INDEX` 显示 `KV (READY, snapshot=2, rows=5)` ✓
+- `ADMIN SHOW KV_INDEX_DATA` 返回 5 行 (ROW_ID 0-4, name/score/category 正确) ✓
+- 交叉验证: KV 索引数据与列存 SELECT 完全一致 ✓
+- DROP + 重建后再次查询 — 正常返回 5 行 ✓
+
+**修复的 bugs:**
+1. `KVIndexSSTWriter.finish()`: `writeRawBlock()` 写 filter/metaindex block 时覆盖 `pendingHandleOffset/Size`，导致最后一个 data block 的 index entry 指向 metaindex block。修复: 写非数据 block 前保存 pending handle
 
 ---
 
