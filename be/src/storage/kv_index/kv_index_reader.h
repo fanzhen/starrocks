@@ -23,6 +23,8 @@
 #include "common/status.h"
 #include "fs/fs.h"
 
+namespace starrocks {
+
 namespace sstable {
 class Table;
 class Iterator;
