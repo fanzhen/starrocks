@@ -14,11 +14,14 @@
 
 #pragma once
 
+#include <memory>
+
 #include "column/chunk.h"
 #include "exec/pipeline/source_operator.h"
 
 namespace starrocks {
 class TupleDescriptor;
+class KVIndexReader;
 } // namespace starrocks
 
 namespace starrocks::pipeline {
@@ -37,7 +40,7 @@ public:
     StatusOr<ChunkPtr> pull_chunk(RuntimeState* state) override;
 
 private:
-    Status _init_full_chunk();
+    Status _init_reader();
 
     std::string _sst_file_path;
     std::vector<std::string> _value_column_names;
@@ -45,9 +48,11 @@ private:
     const TupleDescriptor* _tuple_desc;
     bool _is_finished = false;
 
-    // Buffered full scan result, returned in chunks of DEFAULT_CHUNK_SIZE
-    ChunkPtr _full_chunk;
-    size_t _current_offset = 0;
+    // Streaming scan state
+    std::unique_ptr<KVIndexReader> _reader;
+    bool _reader_initialized = false;
+    // Column name to KV index column index mapping
+    std::vector<std::pair<SlotId, size_t>> _slot_to_kv_col;
 };
 
 class KVIndexScanOpFactory final : public SourceOperatorFactory {

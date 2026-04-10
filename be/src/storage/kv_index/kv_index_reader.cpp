@@ -49,6 +49,14 @@ StatusOr<std::unique_ptr<KVIndexReader>> KVIndexReader::open(const Schema& value
     return reader;
 }
 
+StatusOr<std::unique_ptr<KVIndexReader>> KVIndexReader::open(const Schema& value_schema,
+                                                              std::unique_ptr<RandomAccessFile> file,
+                                                              uint64_t file_size) {
+    ASSIGN_OR_RETURN(auto reader, open(value_schema, file.get(), file_size));
+    reader->_owned_file = std::move(file);
+    return reader;
+}
+
 StatusOr<ChunkUniquePtr> KVIndexReader::multi_get(const std::vector<int64_t>& keys, std::vector<bool>* found_mask) {
     size_t num_keys = keys.size();
     found_mask->assign(num_keys, false);
@@ -151,6 +159,41 @@ StatusOr<ChunkUniquePtr> KVIndexReader::scan_all() {
     RETURN_IF_ERROR(iter->status());
 
     // Build chunk from columns
+    auto chunk = std::make_unique<Chunk>();
+    for (size_t i = 0; i < num_value_cols; i++) {
+        chunk->append_column(std::move(output_columns[i]), static_cast<SlotId>(i));
+    }
+
+    return chunk;
+}
+
+Status KVIndexReader::init_scan() {
+    sstable::ReadOptions read_options;
+    _scan_iter.reset(_table->NewIterator(read_options));
+    _scan_iter->SeekToFirst();
+    return _scan_iter->status();
+}
+
+StatusOr<ChunkUniquePtr> KVIndexReader::scan_batch(size_t batch_size) {
+    size_t num_value_cols = _value_schema.num_fields();
+
+    MutableColumns output_columns;
+    for (size_t i = 0; i < num_value_cols; i++) {
+        output_columns.push_back(ChunkHelper::column_from_field(*_value_schema.field(i)));
+    }
+
+    size_t count = 0;
+    while (_scan_iter->Valid() && count < batch_size) {
+        Slice value = _scan_iter->value();
+        const uint8_t* pos = reinterpret_cast<const uint8_t*>(value.data);
+        for (size_t col = 0; col < num_value_cols; col++) {
+            pos = output_columns[col]->deserialize_and_append(pos);
+        }
+        _scan_iter->Next();
+        count++;
+    }
+    RETURN_IF_ERROR(_scan_iter->status());
+
     auto chunk = std::make_unique<Chunk>();
     for (size_t i = 0; i < num_value_cols; i++) {
         chunk->append_column(std::move(output_columns[i]), static_cast<SlotId>(i));

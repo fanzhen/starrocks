@@ -37,7 +37,7 @@ KVIndexScanOperator::KVIndexScanOperator(OperatorFactory* factory, int32_t id, i
           _value_column_types(std::move(value_column_types)),
           _tuple_desc(tuple_desc) {}
 
-Status KVIndexScanOperator::_init_full_chunk() {
+Status KVIndexScanOperator::_init_reader() {
     // Build value schema from column names/types
     Fields fields;
     for (size_t i = 0; i < _value_column_names.size(); i++) {
@@ -50,66 +50,51 @@ Status KVIndexScanOperator::_init_full_chunk() {
     }
     Schema value_schema(std::move(fields), KeysType::DUP_KEYS, std::vector<ColumnId>{});
 
-    // Open SSTable file
+    // Open SSTable file and initialize streaming scan (reader takes file ownership)
     ASSIGN_OR_RETURN(auto file, fs::new_random_access_file(_sst_file_path));
     ASSIGN_OR_RETURN(auto file_size_signed, file->get_size());
     uint64_t file_size = static_cast<uint64_t>(file_size_signed);
-    ASSIGN_OR_RETURN(auto reader, KVIndexReader::open(value_schema, file.get(), file_size));
+    ASSIGN_OR_RETURN(_reader, KVIndexReader::open(value_schema, std::move(file), file_size));
+    RETURN_IF_ERROR(_reader->init_scan());
 
-    // Full scan
-    ASSIGN_OR_RETURN(auto full_chunk, reader->scan_all());
-
-    if (full_chunk == nullptr || full_chunk->num_rows() == 0) {
-        return Status::OK();
-    }
-
-    // Map KV index columns to output slots based on column name matching.
-    _full_chunk = std::make_shared<Chunk>();
+    // Build slot-to-KV-column mapping
     const auto& slots = _tuple_desc->slots();
     for (auto* slot : slots) {
         bool found = false;
         for (size_t kv_idx = 0; kv_idx < _value_column_names.size(); kv_idx++) {
             if (slot->col_name() == _value_column_names[kv_idx]) {
-                _full_chunk->append_column(full_chunk->get_column_by_index(kv_idx), slot->id());
+                _slot_to_kv_col.emplace_back(slot->id(), kv_idx);
                 found = true;
                 break;
             }
         }
         if (!found) {
-            return Status::InternalError(
-                    fmt::format("Column '{}' not found in KV index", slot->col_name()));
+            return Status::InternalError(fmt::format("Column '{}' not found in KV index", slot->col_name()));
         }
     }
 
+    _reader_initialized = true;
     return Status::OK();
 }
 
 StatusOr<ChunkPtr> KVIndexScanOperator::pull_chunk(RuntimeState* state) {
-    // Lazy init: read entire SSTable on first pull
-    if (_full_chunk == nullptr && _current_offset == 0) {
-        RETURN_IF_ERROR(_init_full_chunk());
-        if (_full_chunk == nullptr) {
-            _is_finished = true;
-            return std::make_shared<Chunk>();
-        }
+    // Lazy init: open SSTable and initialize iterator on first pull
+    if (!_reader_initialized) {
+        RETURN_IF_ERROR(_init_reader());
     }
 
-    size_t total_rows = _full_chunk->num_rows();
-    if (_current_offset >= total_rows) {
+    // Read next batch directly from SSTable iterator
+    ASSIGN_OR_RETURN(auto batch, _reader->scan_batch(DEFAULT_CHUNK_SIZE));
+
+    if (batch == nullptr || batch->num_rows() == 0) {
         _is_finished = true;
         return std::make_shared<Chunk>();
     }
 
-    // Return a slice of at most DEFAULT_CHUNK_SIZE rows
-    size_t rows_to_return = std::min(static_cast<size_t>(DEFAULT_CHUNK_SIZE), total_rows - _current_offset);
-    auto output_chunk = _full_chunk->clone_empty(rows_to_return);
-
-    output_chunk->append(*_full_chunk, _current_offset, rows_to_return);
-    _current_offset += rows_to_return;
-
-    if (_current_offset >= total_rows) {
-        _is_finished = true;
-        _full_chunk.reset(); // release memory
+    // Map KV columns to output slots
+    auto output_chunk = std::make_shared<Chunk>();
+    for (auto& [slot_id, kv_idx] : _slot_to_kv_col) {
+        output_chunk->append_column(batch->get_column_by_index(kv_idx), slot_id);
     }
 
     return output_chunk;
