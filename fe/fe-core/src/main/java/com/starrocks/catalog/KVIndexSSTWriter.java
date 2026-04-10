@@ -188,13 +188,12 @@ public class KVIndexSSTWriter implements Closeable {
         return key;
     }
 
-    // --- Value encoding (RowStoreEncoderSimple format, compatible with BE decoder) ---
+    // --- Value encoding (Column::serialize format, compatible with BE NullableColumn::deserialize_and_append) ---
 
     /**
-     * Encode a row of values in RowStoreEncoderSimple format.
-     * Supports: INT (4 bytes LE), BIGINT (8 bytes LE), DOUBLE (8 bytes IEEE754 LE),
-     *           VARCHAR/STRING (4 bytes length LE + content).
-     * Null values are tracked via an empty Roaring bitmap placeholder.
+     * Encode a row of values in Column::serialize format.
+     * Each column is encoded as: [1B null_flag][raw_data if not null]
+     * Matching NullableColumn::serialize / deserialize_and_append in BE.
      *
      * @param values array of column values (Integer, Long, Double, String, or null)
      * @param types  array of column type names ("INT", "BIGINT", "DOUBLE", "VARCHAR")
@@ -203,89 +202,17 @@ public class KVIndexSSTWriter implements Closeable {
         int numCols = values.length;
         ByteArrayOutputStream buf = new ByteArrayOutputStream();
 
-        // Header: version(4B big-endian int32) + num_cols(4B big-endian int32)
-        // ROW_STORE_VERSION = 0
-        writeInt32BE(buf, 0);
-        writeInt32BE(buf, numCols);
-
-        // Encode each column's data and track offsets, collect null column indices
-        int[] offsets = new int[numCols];
-        byte[][] colData = new byte[numCols][];
-        List<Integer> nullColumnIndices = new ArrayList<>();
         for (int i = 0; i < numCols; i++) {
             if (values[i] == null) {
-                nullColumnIndices.add(i);
-                offsets[i] = 0;
-                colData[i] = new byte[0];
+                buf.write(0x01); // null flag = true
             } else {
+                buf.write(0x00); // null flag = false
                 byte[] rawData = serializeColumn(values[i], types[i]);
-                // Prepend null flag byte (0x00 = not null) to match
-                // NullableColumn::serialize() format expected by BE decoder
-                colData[i] = new byte[1 + rawData.length];
-                colData[i][0] = 0x00; // not null
-                System.arraycopy(rawData, 0, colData[i], 1, rawData.length);
-                offsets[i] = colData[i].length;
-            }
-        }
-
-        // Null bitmap: BitmapValue serialization compatible with BE
-        // BitmapTypeCode: EMPTY=0, SINGLE32=1, BITMAP32=2, SINGLE64=3, SET=5
-        writeBitmapValue(buf, nullColumnIndices);
-
-        // Offsets: per-column data_size(4B big-endian int32)
-        for (int offset : offsets) {
-            writeInt32BE(buf, offset);
-        }
-
-        // Column data
-        for (int i = 0; i < numCols; i++) {
-            if (colData[i].length > 0) {
-                buf.write(colData[i], 0, colData[i].length);
+                buf.write(rawData, 0, rawData.length);
             }
         }
 
         return buf.toByteArray();
-    }
-
-    /**
-     * Write BitmapValue in BE-compatible format:
-     * encode_integral<size_t>(bitmap_byte_size) + bitmap_bytes
-     *
-     * BitmapTypeCode: EMPTY=0 (1B), SINGLE32=1 (1B+4B LE), SET=5 (1B+4B count LE+8B*N LE)
-     */
-    private static void writeBitmapValue(ByteArrayOutputStream buf, List<Integer> values) {
-        if (values.isEmpty()) {
-            // EMPTY: 1 byte type code
-            writeInt64BE(buf, 1);   // bitmap byte size = 1
-            buf.write(0x00);        // BitmapTypeCode::EMPTY
-        } else if (values.size() == 1 && values.get(0) <= 0xFFFFFFFFL) {
-            // SINGLE32: 1 byte type code + 4 bytes uint32 LE
-            writeInt64BE(buf, 5);   // bitmap byte size = 5
-            buf.write(0x01);        // BitmapTypeCode::SINGLE32
-            int v = values.get(0);
-            buf.write(v & 0xFF);
-            buf.write((v >>> 8) & 0xFF);
-            buf.write((v >>> 16) & 0xFF);
-            buf.write((v >>> 24) & 0xFF);
-        } else {
-            // SET: 1 byte type + 4 bytes count (uint32 LE) + 8 bytes per entry (uint64 LE)
-            int setSize = 1 + 4 + 8 * values.size();
-            writeInt64BE(buf, setSize);
-            buf.write(0x05);        // BitmapTypeCode::SET
-            // count as uint32 LE
-            int count = values.size();
-            buf.write(count & 0xFF);
-            buf.write((count >>> 8) & 0xFF);
-            buf.write((count >>> 16) & 0xFF);
-            buf.write((count >>> 24) & 0xFF);
-            // each value as uint64 LE
-            for (int v : values) {
-                long lv = Integer.toUnsignedLong(v);
-                for (int b = 0; b < 8; b++) {
-                    buf.write((int) ((lv >>> (b * 8)) & 0xFF));
-                }
-            }
-        }
     }
 
     private static byte[] serializeColumn(Object value, String type) {
@@ -335,28 +262,6 @@ public class KVIndexSSTWriter implements Closeable {
             default:
                 throw new IllegalArgumentException("Unsupported column type: " + type);
         }
-    }
-
-    private static void writeInt32BE(ByteArrayOutputStream buf, int value) {
-        // encode_integral<int32_t>: XOR sign bit + big-endian
-        int unsigned = value ^ Integer.MIN_VALUE;
-        buf.write((unsigned >>> 24) & 0xFF);
-        buf.write((unsigned >>> 16) & 0xFF);
-        buf.write((unsigned >>> 8) & 0xFF);
-        buf.write(unsigned & 0xFF);
-    }
-
-    private static void writeInt64BE(ByteArrayOutputStream buf, long value) {
-        // encode_integral<size_t>: unsigned, so just big-endian (no XOR for unsigned types)
-        // size_t is unsigned, so to_bigendian without XOR
-        buf.write((int) ((value >>> 56) & 0xFF));
-        buf.write((int) ((value >>> 48) & 0xFF));
-        buf.write((int) ((value >>> 40) & 0xFF));
-        buf.write((int) ((value >>> 32) & 0xFF));
-        buf.write((int) ((value >>> 24) & 0xFF));
-        buf.write((int) ((value >>> 16) & 0xFF));
-        buf.write((int) ((value >>> 8) & 0xFF));
-        buf.write((int) (value & 0xFF));
     }
 
     // --- Block writing ---

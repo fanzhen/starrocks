@@ -214,146 +214,70 @@ public class KVIndexSSTReader implements Closeable {
 
     /**
      * Decode row value (inverse of KVIndexSSTWriter.encodeRowValue).
-     * Format: header(8B) + null_bitmap_size(8B) + bitmap_bytes + offsets(4B*N) + column_data
+     * Format: per-column [1B null_flag][raw_data if not null]
+     * Matching NullableColumn::serialize / deserialize_and_append in BE.
      */
     static Object[] decodeRowValue(byte[] value, String[] columnTypes) {
         int numCols = columnTypes.length;
         int[] pos = {0};
-
-        // Header: version(4B big-endian int32, XOR) + num_cols(4B big-endian int32, XOR)
-        readInt32BE(value, pos); // version (skip)
-        int encodedNumCols = readInt32BE(value, pos);
-        if (encodedNumCols != numCols) {
-            throw new IllegalArgumentException("Column count mismatch: expected " + numCols
-                    + " but got " + encodedNumCols);
-        }
-
-        // Null bitmap: size(8B big-endian unsigned) + bitmap_bytes
-        long bitmapSize = readUInt64BE(value, pos);
-        java.util.Set<Integer> nullColumns = new java.util.HashSet<>();
-        if (bitmapSize > 0) {
-            int bitmapStart = pos[0];
-            int typeCode = value[bitmapStart] & 0xFF;
-            if (typeCode == 0x00) {
-                // EMPTY — no nulls
-            } else if (typeCode == 0x01) {
-                // SINGLE32 — one null column index as uint32 LE
-                int colIdx = getFixed32(value, bitmapStart + 1);
-                nullColumns.add(colIdx);
-            } else if (typeCode == 0x05) {
-                // SET — count(uint32 LE) + entries(uint64 LE each)
-                int count = getFixed32(value, bitmapStart + 1);
-                for (int i = 0; i < count; i++) {
-                    long v = getFixed64LE(value, bitmapStart + 5 + i * 8);
-                    nullColumns.add((int) v);
-                }
-            }
-            // Skip bitmap bytes
-            pos[0] += (int) bitmapSize;
-        }
-
-        // Offsets: per-column data_size(4B big-endian int32, XOR)
-        int[] colSizes = new int[numCols];
-        for (int i = 0; i < numCols; i++) {
-            colSizes[i] = readInt32BE(value, pos);
-        }
-
-        // Column data
         Object[] result = new Object[numCols];
+
         for (int i = 0; i < numCols; i++) {
-            if (nullColumns.contains(i) || colSizes[i] == 0) {
+            int nullFlag = value[pos[0]] & 0xFF;
+            pos[0]++;
+            if (nullFlag != 0) {
                 result[i] = null;
             } else {
-                result[i] = deserializeColumn(value, pos, colSizes[i], columnTypes[i]);
+                result[i] = deserializeColumn(value, pos, columnTypes[i]);
             }
         }
 
         return result;
     }
 
-    private static long getFixed64LE(byte[] data, int offset) {
-        long v = 0;
-        for (int i = 0; i < 8; i++) {
-            v |= ((long) (data[offset + i] & 0xFF)) << (i * 8);
-        }
-        return v;
-    }
-
-    private static Object deserializeColumn(byte[] data, int[] pos, int size, String type) {
-        // Skip null flag byte (0x00 = not null, matching NullableColumn::serialize format)
-        int nullFlag = data[pos[0]] & 0xFF;
-        if (nullFlag != 0) {
-            pos[0] += size;
-            return null;
-        }
-        ByteBuffer bb = ByteBuffer.wrap(data, pos[0] + 1, size - 1).order(ByteOrder.LITTLE_ENDIAN);
-        Object result;
+    private static Object deserializeColumn(byte[] data, int[] pos, String type) {
+        ByteBuffer bb;
         switch (type.toUpperCase()) {
             case "INT":
             case "INT32":
             case "INTEGER":
-                result = bb.getInt();
-                break;
+                bb = ByteBuffer.wrap(data, pos[0], 4).order(ByteOrder.LITTLE_ENDIAN);
+                pos[0] += 4;
+                return bb.getInt();
             case "BIGINT":
             case "INT64":
             case "LONG":
-                result = bb.getLong();
-                break;
+                bb = ByteBuffer.wrap(data, pos[0], 8).order(ByteOrder.LITTLE_ENDIAN);
+                pos[0] += 8;
+                return bb.getLong();
             case "FLOAT":
-                result = bb.getFloat();
-                break;
+                bb = ByteBuffer.wrap(data, pos[0], 4).order(ByteOrder.LITTLE_ENDIAN);
+                pos[0] += 4;
+                return bb.getFloat();
             case "DOUBLE":
-                result = bb.getDouble();
-                break;
+                bb = ByteBuffer.wrap(data, pos[0], 8).order(ByteOrder.LITTLE_ENDIAN);
+                pos[0] += 8;
+                return bb.getDouble();
             case "VARCHAR":
             case "STRING":
             case "CHAR": {
+                bb = ByteBuffer.wrap(data, pos[0], 4).order(ByteOrder.LITTLE_ENDIAN);
                 int strLen = bb.getInt();
-                byte[] strBytes = new byte[strLen];
-                bb.get(strBytes);
-                result = new String(strBytes, StandardCharsets.UTF_8);
-                break;
+                pos[0] += 4;
+                String str = new String(data, pos[0], strLen, StandardCharsets.UTF_8);
+                pos[0] += strLen;
+                return str;
             }
-            default:
+            default: {
                 // Fallback: treat as VARCHAR
+                bb = ByteBuffer.wrap(data, pos[0], 4).order(ByteOrder.LITTLE_ENDIAN);
                 int strLen = bb.getInt();
-                byte[] strBytes = new byte[strLen];
-                bb.get(strBytes);
-                result = new String(strBytes, StandardCharsets.UTF_8);
-                break;
+                pos[0] += 4;
+                String str = new String(data, pos[0], strLen, StandardCharsets.UTF_8);
+                pos[0] += strLen;
+                return str;
+            }
         }
-        pos[0] += size;
-        return result;
-    }
-
-    // --- Decoding utilities ---
-
-    private static int readInt32BE(byte[] data, int[] pos) {
-        // decode_integral<int32_t>: big-endian → XOR sign bit
-        int unsigned = ((data[pos[0]] & 0xFF) << 24)
-                | ((data[pos[0] + 1] & 0xFF) << 16)
-                | ((data[pos[0] + 2] & 0xFF) << 8)
-                | (data[pos[0] + 3] & 0xFF);
-        pos[0] += 4;
-        return unsigned ^ Integer.MIN_VALUE;
-    }
-
-    private static long readUInt64BE(byte[] data, int[] pos) {
-        // unsigned big-endian (no XOR)
-        long value = 0;
-        for (int i = 0; i < 8; i++) {
-            value = (value << 8) | (data[pos[0] + i] & 0xFF);
-        }
-        pos[0] += 8;
-        return value;
-    }
-
-    private static int getFixed32(byte[] data, int offset) {
-        // Little-endian
-        return (data[offset] & 0xFF)
-                | ((data[offset + 1] & 0xFF) << 8)
-                | ((data[offset + 2] & 0xFF) << 16)
-                | ((data[offset + 3] & 0xFF) << 24);
     }
 
     private static long getVarint64(byte[] data, int[] pos) {
