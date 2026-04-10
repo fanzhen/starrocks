@@ -26,6 +26,8 @@ namespace starrocks::pipeline {
 
 // === KVIndexScanOperator ===
 
+KVIndexScanOperator::~KVIndexScanOperator() = default;
+
 KVIndexScanOperator::KVIndexScanOperator(OperatorFactory* factory, int32_t id, int32_t plan_node_id,
                                          int32_t driver_sequence, std::string sst_file_path,
                                          std::vector<std::string> value_column_names,

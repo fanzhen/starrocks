@@ -32,7 +32,7 @@ public:
                         std::string sst_file_path, std::vector<std::string> value_column_names,
                         std::vector<std::string> value_column_types, const TupleDescriptor* tuple_desc);
 
-    ~KVIndexScanOperator() override = default;
+    ~KVIndexScanOperator() override;
 
     bool has_output() const override { return !_is_finished; }
     bool is_finished() const override { return _is_finished; }
