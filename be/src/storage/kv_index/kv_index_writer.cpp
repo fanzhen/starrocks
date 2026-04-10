@@ -19,7 +19,6 @@
 #include "column/fixed_length_column.h"
 #include "common/status.h"
 #include "storage/primary_key_encoder.h"
-#include "storage/row_store_encoder_simple.h"
 #include "storage/sstable/filter_policy.h"
 #include "storage/sstable/options.h"
 #include "storage/sstable/table_builder.h"
@@ -55,16 +54,14 @@ Status KVIndexWriter::add_chunk(const Column& keys, const Chunk& value_chunk) {
     auto* key_col = down_cast<const Int64Column*>(&keys);
     const auto& key_data = key_col->get_data();
 
-    // Encode all values using RowStoreEncoderSimple
+    // Collect value columns
     Columns value_columns;
     for (size_t i = 0; i < value_chunk.num_columns(); i++) {
         value_columns.push_back(value_chunk.get_column_by_index(i));
     }
-    auto encoded_values = BinaryColumn::create();
-    RowStoreEncoderSimple encoder;
-    RETURN_IF_ERROR(encoder.encode_columns_to_full_row_column(_value_schema, value_columns, *encoded_values));
+    size_t num_value_cols = value_columns.size();
 
-    // Add each KV pair to SSTable
+    // Add each KV pair to SSTable, serializing values via Column::serialize
     for (size_t i = 0; i < num_rows; i++) {
         int64_t key = key_data[i];
 
@@ -78,10 +75,20 @@ Status KVIndexWriter::add_chunk(const Column& keys, const Chunk& value_chunk) {
         std::string encoded_key;
         encoding_utils::encode_integral<int64_t>(key, &encoded_key);
 
-        // Get encoded value
-        Slice value_slice = encoded_values->get_slice(i);
+        // Compute total serialized size for all value columns
+        size_t total_size = 0;
+        for (size_t col = 0; col < num_value_cols; col++) {
+            total_size += value_columns[col]->serialize_size(i);
+        }
 
-        RETURN_IF_ERROR(_builder->Add(Slice(encoded_key), value_slice));
+        // Serialize all value columns contiguously
+        std::string buf(total_size, '\0');
+        uint8_t* pos = reinterpret_cast<uint8_t*>(buf.data());
+        for (size_t col = 0; col < num_value_cols; col++) {
+            pos += value_columns[col]->serialize(i, pos);
+        }
+
+        RETURN_IF_ERROR(_builder->Add(Slice(encoded_key), Slice(buf)));
 
         _last_key = key;
         _has_data = true;
