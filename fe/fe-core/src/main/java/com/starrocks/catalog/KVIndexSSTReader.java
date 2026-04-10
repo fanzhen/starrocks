@@ -280,6 +280,14 @@ public class KVIndexSSTReader implements Closeable {
         }
     }
 
+    private static int getFixed32(byte[] data, int offset) {
+        // Little-endian
+        return (data[offset] & 0xFF)
+                | ((data[offset + 1] & 0xFF) << 8)
+                | ((data[offset + 2] & 0xFF) << 16)
+                | ((data[offset + 3] & 0xFF) << 24);
+    }
+
     private static long getVarint64(byte[] data, int[] pos) {
         long result = 0;
         int shift = 0;
