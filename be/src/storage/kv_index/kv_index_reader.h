@@ -21,10 +21,7 @@
 #include "column/schema.h"
 #include "column/vectorized_fwd.h"
 #include "common/status.h"
-
-namespace starrocks {
-
-class RandomAccessFile;
+#include "fs/fs.h"
 
 namespace sstable {
 class Table;
