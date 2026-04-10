@@ -142,25 +142,52 @@ StatusOr<ChunkUniquePtr> KVIndexReader::scan_all() {
     sstable::ReadOptions read_options;
     std::unique_ptr<sstable::Iterator> iter(_table->NewIterator(read_options));
 
-    // Collect all keys
-    std::vector<int64_t> keys;
+    size_t num_value_cols = _value_schema.num_fields();
+    std::vector<uint32_t> read_column_ids;
+    for (size_t i = 0; i < num_value_cols; i++) {
+        read_column_ids.push_back(static_cast<uint32_t>(i));
+    }
+
+    // Create output columns
+    MutableColumns output_columns;
+    for (size_t i = 0; i < num_value_cols; i++) {
+        output_columns.push_back(ChunkHelper::column_from_field(*_value_schema.field(i)));
+    }
+
+    // Single-pass: iterate and decode each entry directly
+    RowStoreEncoderSimple decoder;
     iter->SeekToFirst();
     while (iter->Valid()) {
-        Slice key_slice = iter->key();
-        int64_t row_id = 0;
-        encoding_utils::decode_integral(&key_slice, &row_id);
-        keys.push_back(row_id);
+        Slice value = iter->value();
+
+        // Decode value into temporary columns, then append to output
+        auto encoded_value_col = BinaryColumn::create();
+        encoded_value_col->append(value);
+
+        MutableColumns tmp_columns;
+        for (size_t i = 0; i < num_value_cols; i++) {
+            tmp_columns.push_back(ChunkHelper::column_from_field(*_value_schema.field(i)));
+        }
+
+        auto st = decoder.decode_columns_from_full_row_column(
+                _value_schema, *encoded_value_col, read_column_ids, &tmp_columns);
+        if (st.ok()) {
+            for (size_t i = 0; i < num_value_cols; i++) {
+                output_columns[i]->append(*tmp_columns[i], 0, tmp_columns[i]->size());
+            }
+        }
+
         iter->Next();
     }
     RETURN_IF_ERROR(iter->status());
 
-    if (keys.empty()) {
-        return ChunkHelper::new_chunk(_value_schema, 0);
+    // Build chunk from columns
+    auto chunk = std::make_unique<Chunk>();
+    for (size_t i = 0; i < num_value_cols; i++) {
+        chunk->append_column(std::move(output_columns[i]), static_cast<SlotId>(i));
     }
 
-    // Use multi_get for actual data retrieval
-    std::vector<bool> found_mask;
-    return multi_get(keys, &found_mask);
+    return chunk;
 }
 
 } // namespace starrocks

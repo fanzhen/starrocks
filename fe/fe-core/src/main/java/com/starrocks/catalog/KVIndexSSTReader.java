@@ -214,7 +214,7 @@ public class KVIndexSSTReader implements Closeable {
 
     /**
      * Decode row value (inverse of KVIndexSSTWriter.encodeRowValue).
-     * Format: header(8B) + null_bitmap_size(8B) + offsets(4B*N) + column_data
+     * Format: header(8B) + null_bitmap_size(8B) + bitmap_bytes + offsets(4B*N) + column_data
      */
     static Object[] decodeRowValue(byte[] value, String[] columnTypes) {
         int numCols = columnTypes.length;
@@ -228,10 +228,29 @@ public class KVIndexSSTReader implements Closeable {
                     + " but got " + encodedNumCols);
         }
 
-        // Null bitmap size (8B big-endian unsigned)
+        // Null bitmap: size(8B big-endian unsigned) + bitmap_bytes
         long bitmapSize = readUInt64BE(value, pos);
-        // Skip bitmap bytes
-        pos[0] += (int) bitmapSize;
+        java.util.Set<Integer> nullColumns = new java.util.HashSet<>();
+        if (bitmapSize > 0) {
+            int bitmapStart = pos[0];
+            int typeCode = value[bitmapStart] & 0xFF;
+            if (typeCode == 0x00) {
+                // EMPTY — no nulls
+            } else if (typeCode == 0x01) {
+                // SINGLE32 — one null column index as uint32 LE
+                int colIdx = getFixed32(value, bitmapStart + 1);
+                nullColumns.add(colIdx);
+            } else if (typeCode == 0x05) {
+                // SET — count(uint32 LE) + entries(uint64 LE each)
+                int count = getFixed32(value, bitmapStart + 1);
+                for (int i = 0; i < count; i++) {
+                    long v = getFixed64LE(value, bitmapStart + 5 + i * 8);
+                    nullColumns.add((int) v);
+                }
+            }
+            // Skip bitmap bytes
+            pos[0] += (int) bitmapSize;
+        }
 
         // Offsets: per-column data_size(4B big-endian int32, XOR)
         int[] colSizes = new int[numCols];
@@ -242,7 +261,7 @@ public class KVIndexSSTReader implements Closeable {
         // Column data
         Object[] result = new Object[numCols];
         for (int i = 0; i < numCols; i++) {
-            if (colSizes[i] == 0) {
+            if (nullColumns.contains(i) || colSizes[i] == 0) {
                 result[i] = null;
             } else {
                 result[i] = deserializeColumn(value, pos, colSizes[i], columnTypes[i]);
@@ -250,6 +269,14 @@ public class KVIndexSSTReader implements Closeable {
         }
 
         return result;
+    }
+
+    private static long getFixed64LE(byte[] data, int offset) {
+        long v = 0;
+        for (int i = 0; i < 8; i++) {
+            v |= ((long) (data[offset + i] & 0xFF)) << (i * 8);
+        }
+        return v;
     }
 
     private static Object deserializeColumn(byte[] data, int[] pos, int size, String type) {

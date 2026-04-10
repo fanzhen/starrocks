@@ -208,15 +208,13 @@ public class KVIndexSSTWriter implements Closeable {
         writeInt32BE(buf, 0);
         writeInt32BE(buf, numCols);
 
-        // Null bitmap: for v1 simplicity, all non-null → empty bitmap (size=0)
-        // encode_integral<size_t> writes 8 bytes big-endian on 64-bit
-        writeInt64BE(buf, 0); // bitmap byte size = 0
-
-        // Encode each column's data and track offsets
+        // Encode each column's data and track offsets, collect null column indices
         int[] offsets = new int[numCols];
         byte[][] colData = new byte[numCols][];
+        List<Integer> nullColumnIndices = new ArrayList<>();
         for (int i = 0; i < numCols; i++) {
             if (values[i] == null) {
+                nullColumnIndices.add(i);
                 offsets[i] = 0;
                 colData[i] = new byte[0];
             } else {
@@ -229,6 +227,10 @@ public class KVIndexSSTWriter implements Closeable {
                 offsets[i] = colData[i].length;
             }
         }
+
+        // Null bitmap: BitmapValue serialization compatible with BE
+        // BitmapTypeCode: EMPTY=0, SINGLE32=1, BITMAP32=2, SINGLE64=3, SET=5
+        writeBitmapValue(buf, nullColumnIndices);
 
         // Offsets: per-column data_size(4B big-endian int32)
         for (int offset : offsets) {
@@ -243,6 +245,47 @@ public class KVIndexSSTWriter implements Closeable {
         }
 
         return buf.toByteArray();
+    }
+
+    /**
+     * Write BitmapValue in BE-compatible format:
+     * encode_integral<size_t>(bitmap_byte_size) + bitmap_bytes
+     *
+     * BitmapTypeCode: EMPTY=0 (1B), SINGLE32=1 (1B+4B LE), SET=5 (1B+4B count LE+8B*N LE)
+     */
+    private static void writeBitmapValue(ByteArrayOutputStream buf, List<Integer> values) {
+        if (values.isEmpty()) {
+            // EMPTY: 1 byte type code
+            writeInt64BE(buf, 1);   // bitmap byte size = 1
+            buf.write(0x00);        // BitmapTypeCode::EMPTY
+        } else if (values.size() == 1 && values.get(0) <= 0xFFFFFFFFL) {
+            // SINGLE32: 1 byte type code + 4 bytes uint32 LE
+            writeInt64BE(buf, 5);   // bitmap byte size = 5
+            buf.write(0x01);        // BitmapTypeCode::SINGLE32
+            int v = values.get(0);
+            buf.write(v & 0xFF);
+            buf.write((v >>> 8) & 0xFF);
+            buf.write((v >>> 16) & 0xFF);
+            buf.write((v >>> 24) & 0xFF);
+        } else {
+            // SET: 1 byte type + 4 bytes count (uint32 LE) + 8 bytes per entry (uint64 LE)
+            int setSize = 1 + 4 + 8 * values.size();
+            writeInt64BE(buf, setSize);
+            buf.write(0x05);        // BitmapTypeCode::SET
+            // count as uint32 LE
+            int count = values.size();
+            buf.write(count & 0xFF);
+            buf.write((count >>> 8) & 0xFF);
+            buf.write((count >>> 16) & 0xFF);
+            buf.write((count >>> 24) & 0xFF);
+            // each value as uint64 LE
+            for (int v : values) {
+                long lv = Integer.toUnsignedLong(v);
+                for (int b = 0; b < 8; b++) {
+                    buf.write((int) ((lv >>> (b * 8)) & 0xFF));
+                }
+            }
+        }
     }
 
     private static byte[] serializeColumn(Object value, String type) {

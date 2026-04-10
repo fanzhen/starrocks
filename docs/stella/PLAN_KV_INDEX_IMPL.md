@@ -12,6 +12,7 @@
 | 2 | FE DDL + 元数据 | Parser + Analyzer + Thrift/Proto | `CREATE/DROP INDEX ... USING KV` + `SHOW INDEX` | Stage 0 |
 | 3 | Full Build 路径 | CN 构建任务 + Manifest | `CREATE INDEX` 触发构建 → 验证 SST 文件存在 | Stage 1, 2 |
 | 4 | Read 路径集成 | FE Java SSTable Reader + ADMIN SHOW KV_INDEX_DATA | SQL 查询返回 SSTable 全部数据 | Stage 3 |
+| 4.5 | Query Path 集成 | FE KVIndexScanNode + BE KVIndexScanOperator | `SET enable_kv_index_scan=true; SELECT` 返回正确数据 | Stage 4 |
 | 5 | 后台维护 | 增量 Build + Purge + Compaction | 追加数据后自动增量构建 + 查询验证 | Stage 3 |
 | 6 | 性能优化 | MultiGet 批量优化 + block cache | perf 火焰图 + benchmark 对比 | Stage 4 |
 
@@ -471,6 +472,70 @@ ADMIN SHOW KV_INDEX_DATA FROM paimon_catalog.test_db.test_kv INDEX idx_test_kv;
 
 **修复的 bugs:**
 1. `KVIndexSSTWriter.finish()`: `writeRawBlock()` 写 filter/metaindex block 时覆盖 `pendingHandleOffset/Size`，导致最后一个 data block 的 index entry 指向 metaindex block。修复: 写非数据 block 前保存 pending handle
+
+---
+
+## Stage 4.5: Query Path 集成
+
+### 目标
+
+将 KV Index 集成到正常 SELECT 查询路径。通过 Session 变量 `enable_kv_index_scan=true` 触发，
+FE 优化器在 `visitPhysicalPaimonScan()` 中检测到 KV index READY 且输出列被覆盖时，
+替换 PaimonScanNode 为 KVIndexScanNode，BE 侧通过新的 KV_INDEX_SCAN_NODE pipeline operator
+从 SSTable 全量读取数据。
+
+### 新增/修改文件
+
+| 文件 | 类型 | 说明 |
+|------|------|------|
+| `gensrc/thrift/PlanNodes.thrift` | 修改 | 新增 TPlanNodeType.KV_INDEX_SCAN_NODE + TKVIndexScanNode struct |
+| `fe/.../qe/SessionVariable.java` | 修改 | 新增 `enable_kv_index_scan` session 变量 |
+| `fe/.../planner/KVIndexScanNode.java` | 新建 | FE plan node，toThrift → KV_INDEX_SCAN_NODE |
+| `fe/.../sql/plan/PlanFragmentBuilder.java` | 修改 | visitPhysicalPaimonScan 拦截 → KVIndexScanNode |
+| `fe/.../catalog/KVIndexSSTWriter.java` | 修改 | 值编码添加 null flag byte (BE NullableColumn 兼容) |
+| `fe/.../catalog/KVIndexSSTReader.java` | 修改 | 解码跳过 null flag byte |
+| `be/src/storage/kv_index/kv_index_reader.h/cpp` | 修改 | 新增 `scan_all()` 全量扫描方法 |
+| `be/src/exec/kv_index_scan_node.h/cpp` | 新建 | BE exec node (PipelineNode) |
+| `be/src/exec/pipeline/kv_index_scan_operator.h/cpp` | 新建 | Pipeline source operator |
+| `be/src/exec/exec_factory.cpp` | 修改 | 注册 KV_INDEX_SCAN_NODE |
+
+### E2E 验证
+
+```sql
+-- 1. 确认索引 READY
+SHOW INDEX FROM paimon_catalog.test_db.test_kv;
+
+-- 2. 启用 KV index scan
+SET enable_kv_index_scan = true;
+SELECT name, score, category FROM paimon_catalog.test_db.test_kv ORDER BY name;
+-- 期望: alice/0.95/tech, bob/0.82/science, carol/0.71/tech, dave/0.63/art, eve/0.99/tech
+
+-- 3. EXPLAIN 显示 KVIndexScan
+EXPLAIN SELECT name, score, category FROM paimon_catalog.test_db.test_kv;
+-- 期望: 0:KVIndexScan + SST 路径 + 列名
+
+-- 4. 禁用后恢复 PaimonScanNode
+SET enable_kv_index_scan = false;
+EXPLAIN SELECT name, score, category FROM paimon_catalog.test_db.test_kv;
+-- 期望: 0:PaimonScanNode
+
+-- 5. ADMIN SHOW KV_INDEX_DATA 仍正常
+ADMIN SHOW KV_INDEX_DATA FROM paimon_catalog.test_db.test_kv INDEX idx_test_kv;
+```
+
+### 状态: ✅ 完成 (2026-04-09)
+
+**E2E 结果 (远程 8.217.233.254, Docker sr-dev):**
+- KV index scan 查询: 5 行数据正确 (alice/bob/carol/dave/eve, score/category 全部匹配) ✓
+- EXPLAIN 启用: `0:KVIndexScan` + SST 路径 + Columns ✓
+- EXPLAIN 禁用: `0:PaimonScanNode TABLE: test_kv` ✓
+- `ADMIN SHOW KV_INDEX_DATA`: 5 行正确 ✓
+- Baseline Paimon 查询与 KV scan 结果完全一致 ✓
+
+**修复的 bugs:**
+1. Fragment worker assignment NPE: KVIndexScanNode 无子 fragment，`DataPartition.RANDOM` 导致 `RemoteFragmentAssignmentStrategy` NPE。修复: 改用 `DataPartition.UNPARTITIONED`
+2. 值编码缺少 null flag byte: BE `NullableColumn::deserialize_and_append()` 期望首字节为 null flag (0x00=not null)，Java encoder 未写入导致全部返回 null/0。修复: `KVIndexSSTWriter` 添加 0x00 前缀
+3. BE 编译错误: `decode_integral` API 签名 + Schema 构造函数参数不匹配
 
 ---
 

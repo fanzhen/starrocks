@@ -249,7 +249,13 @@ public class KVIndexMetadataManager {
 
     public List<KVIndexMeta> getIndexMetas(String catalog, String db, String table) {
         String key = makeKey(catalog, db, table);
-        return indexMap.getOrDefault(key, Collections.emptyList());
+        List<KVIndexMeta> metas = indexMap.get(key);
+        if (metas == null) {
+            return Collections.emptyList();
+        }
+        synchronized (this) {
+            return new ArrayList<>(metas);
+        }
     }
 
     /**
