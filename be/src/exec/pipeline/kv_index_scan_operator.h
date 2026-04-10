@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include "column/chunk.h"
 #include "exec/pipeline/source_operator.h"
 
 namespace starrocks {
@@ -36,11 +37,17 @@ public:
     StatusOr<ChunkPtr> pull_chunk(RuntimeState* state) override;
 
 private:
+    Status _init_full_chunk();
+
     std::string _sst_file_path;
     std::vector<std::string> _value_column_names;
     std::vector<std::string> _value_column_types;
     const TupleDescriptor* _tuple_desc;
     bool _is_finished = false;
+
+    // Buffered full scan result, returned in chunks of DEFAULT_CHUNK_SIZE
+    ChunkPtr _full_chunk;
+    size_t _current_offset = 0;
 };
 
 class KVIndexScanOpFactory final : public SourceOperatorFactory {

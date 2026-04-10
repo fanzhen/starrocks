@@ -59,7 +59,6 @@ StatusOr<ChunkUniquePtr> KVIndexReader::multi_get(const std::vector<int64_t>& ke
     ChunkUniquePtr result = ChunkHelper::new_chunk(_value_schema, num_keys);
 
     // Make all columns nullable and fill with NULLs initially
-    // Use mutable_columns() to get mutable access (ColumnPtr = ImmutPtr<const Column>)
     auto mcols = result->mutable_columns();
     for (size_t col_idx = 0; col_idx < num_value_cols; col_idx++) {
         mcols[col_idx]->resize(num_keys);
@@ -90,55 +89,56 @@ StatusOr<ChunkUniquePtr> KVIndexReader::multi_get(const std::vector<int64_t>& ke
         read_column_ids.push_back(static_cast<uint32_t>(i));
     }
 
-    // Sequential seek for each sorted key
+    // Batch: collect found entries, then decode in bulk
+    auto encoded_batch = BinaryColumn::create();
+    std::vector<uint32_t> found_positions; // original positions of found keys
+
     for (uint32_t sorted_pos : sorted_indices) {
         int64_t key = keys[sorted_pos];
 
-        // Encode key
         std::string encoded_key;
         encoding_utils::encode_integral<int64_t>(key, &encoded_key);
 
-        // Seek to key
         iter->Seek(Slice(encoded_key));
         if (!iter->Valid() || !iter->status().ok()) {
             continue;
         }
-
-        // Check exact match
         if (iter->key() != Slice(encoded_key)) {
             continue;
         }
 
-        // Found: decode value
-        Slice value = iter->value();
-        auto encoded_value_col = BinaryColumn::create();
-        encoded_value_col->append(value);
-
-        // Decode into temporary columns
-        MutableColumns tmp_columns;
-        for (size_t col_idx = 0; col_idx < num_value_cols; col_idx++) {
-            tmp_columns.push_back(ChunkHelper::column_from_field(*_value_schema.field(col_idx)));
-        }
-
-        RowStoreEncoderSimple decoder;
-        auto st = decoder.decode_columns_from_full_row_column(_value_schema, *encoded_value_col, read_column_ids,
-                                                               &tmp_columns);
-        if (!st.ok()) {
-            continue;
-        }
-
-        // Copy decoded values into the result chunk at the original position
-        for (size_t col_idx = 0; col_idx < num_value_cols; col_idx++) {
-            mcols[col_idx]->update_rows(*tmp_columns[col_idx], &sorted_pos);
-        }
-
+        encoded_batch->append(iter->value());
+        found_positions.push_back(sorted_pos);
         (*found_mask)[sorted_pos] = true;
+    }
+
+    if (found_positions.empty()) {
+        return result;
+    }
+
+    // Decode all found values at once
+    MutableColumns decoded_columns;
+    for (size_t i = 0; i < num_value_cols; i++) {
+        decoded_columns.push_back(ChunkHelper::column_from_field(*_value_schema.field(i)));
+    }
+
+    RowStoreEncoderSimple decoder;
+    RETURN_IF_ERROR(decoder.decode_columns_from_full_row_column(
+            _value_schema, *encoded_batch, read_column_ids, &decoded_columns));
+
+    // Scatter decoded values into result at original positions
+    // update_rows copies src[i] → dest[indexes[i]], so we need indexes = found_positions
+    // and src must have found_positions.size() rows (which decoded_columns does)
+    for (size_t col_idx = 0; col_idx < num_value_cols; col_idx++) {
+        mcols[col_idx]->update_rows(*decoded_columns[col_idx], found_positions.data());
     }
 
     return result;
 }
 
 StatusOr<ChunkUniquePtr> KVIndexReader::scan_all() {
+    static constexpr size_t kDecodeBatchSize = 4096;
+
     sstable::ReadOptions read_options;
     std::unique_ptr<sstable::Iterator> iter(_table->NewIterator(read_options));
 
@@ -148,36 +148,33 @@ StatusOr<ChunkUniquePtr> KVIndexReader::scan_all() {
         read_column_ids.push_back(static_cast<uint32_t>(i));
     }
 
-    // Create output columns
+    // Create output columns once
     MutableColumns output_columns;
     for (size_t i = 0; i < num_value_cols; i++) {
         output_columns.push_back(ChunkHelper::column_from_field(*_value_schema.field(i)));
     }
 
-    // Single-pass: iterate and decode each entry directly
+    // Batch decode: collect encoded values, then decode in bulk
     RowStoreEncoderSimple decoder;
+    auto encoded_batch = BinaryColumn::create();
+    encoded_batch->reserve(kDecodeBatchSize);
+
     iter->SeekToFirst();
     while (iter->Valid()) {
-        Slice value = iter->value();
-
-        // Decode value into temporary columns, then append to output
-        auto encoded_value_col = BinaryColumn::create();
-        encoded_value_col->append(value);
-
-        MutableColumns tmp_columns;
-        for (size_t i = 0; i < num_value_cols; i++) {
-            tmp_columns.push_back(ChunkHelper::column_from_field(*_value_schema.field(i)));
+        // Collect a batch of encoded values
+        encoded_batch->reset_column();
+        size_t batch_count = 0;
+        while (iter->Valid() && batch_count < kDecodeBatchSize) {
+            encoded_batch->append(iter->value());
+            iter->Next();
+            batch_count++;
         }
 
-        auto st = decoder.decode_columns_from_full_row_column(
-                _value_schema, *encoded_value_col, read_column_ids, &tmp_columns);
-        if (st.ok()) {
-            for (size_t i = 0; i < num_value_cols; i++) {
-                output_columns[i]->append(*tmp_columns[i], 0, tmp_columns[i]->size());
-            }
-        }
+        if (batch_count == 0) break;
 
-        iter->Next();
+        // Decode entire batch at once into output columns directly
+        RETURN_IF_ERROR(decoder.decode_columns_from_full_row_column(
+                _value_schema, *encoded_batch, read_column_ids, &output_columns));
     }
     RETURN_IF_ERROR(iter->status());
 

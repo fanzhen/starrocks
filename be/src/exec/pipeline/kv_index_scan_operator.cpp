@@ -14,9 +14,9 @@
 
 #include "exec/pipeline/kv_index_scan_operator.h"
 
-#include "column/chunk.h"
 #include "column/field.h"
 #include "column/schema.h"
+#include "common/constexpr.h"
 #include "fs/fs_util.h"
 #include "runtime/descriptors.h"
 #include "storage/kv_index/kv_index_reader.h"
@@ -37,9 +37,7 @@ KVIndexScanOperator::KVIndexScanOperator(OperatorFactory* factory, int32_t id, i
           _value_column_types(std::move(value_column_types)),
           _tuple_desc(tuple_desc) {}
 
-StatusOr<ChunkPtr> KVIndexScanOperator::pull_chunk(RuntimeState* state) {
-    _is_finished = true;
-
+Status KVIndexScanOperator::_init_full_chunk() {
     // Build value schema from column names/types
     Fields fields;
     for (size_t i = 0; i < _value_column_names.size(); i++) {
@@ -62,18 +60,17 @@ StatusOr<ChunkPtr> KVIndexScanOperator::pull_chunk(RuntimeState* state) {
     ASSIGN_OR_RETURN(auto full_chunk, reader->scan_all());
 
     if (full_chunk == nullptr || full_chunk->num_rows() == 0) {
-        return std::make_shared<Chunk>();
+        return Status::OK();
     }
 
     // Map KV index columns to output slots based on column name matching.
-    // The output chunk must have columns in the order defined by _tuple_desc slots.
-    auto output_chunk = std::make_shared<Chunk>();
+    _full_chunk = std::make_shared<Chunk>();
     const auto& slots = _tuple_desc->slots();
     for (auto* slot : slots) {
         bool found = false;
         for (size_t kv_idx = 0; kv_idx < _value_column_names.size(); kv_idx++) {
             if (slot->col_name() == _value_column_names[kv_idx]) {
-                output_chunk->append_column(full_chunk->get_column_by_index(kv_idx), slot->id());
+                _full_chunk->append_column(full_chunk->get_column_by_index(kv_idx), slot->id());
                 found = true;
                 break;
             }
@@ -82,6 +79,37 @@ StatusOr<ChunkPtr> KVIndexScanOperator::pull_chunk(RuntimeState* state) {
             return Status::InternalError(
                     fmt::format("Column '{}' not found in KV index", slot->col_name()));
         }
+    }
+
+    return Status::OK();
+}
+
+StatusOr<ChunkPtr> KVIndexScanOperator::pull_chunk(RuntimeState* state) {
+    // Lazy init: read entire SSTable on first pull
+    if (_full_chunk == nullptr && _current_offset == 0) {
+        RETURN_IF_ERROR(_init_full_chunk());
+        if (_full_chunk == nullptr) {
+            _is_finished = true;
+            return std::make_shared<Chunk>();
+        }
+    }
+
+    size_t total_rows = _full_chunk->num_rows();
+    if (_current_offset >= total_rows) {
+        _is_finished = true;
+        return std::make_shared<Chunk>();
+    }
+
+    // Return a slice of at most DEFAULT_CHUNK_SIZE rows
+    size_t rows_to_return = std::min(static_cast<size_t>(DEFAULT_CHUNK_SIZE), total_rows - _current_offset);
+    auto output_chunk = _full_chunk->clone_empty(rows_to_return);
+
+    output_chunk->append(*_full_chunk, _current_offset, rows_to_return);
+    _current_offset += rows_to_return;
+
+    if (_current_offset >= total_rows) {
+        _is_finished = true;
+        _full_chunk.reset(); // release memory
     }
 
     return output_chunk;
