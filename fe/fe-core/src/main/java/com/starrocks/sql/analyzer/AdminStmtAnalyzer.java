@@ -24,6 +24,8 @@ import com.starrocks.common.util.PropertyAnalyzer;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.sql.ast.AdminCancelRepairTableStmt;
 import com.starrocks.sql.ast.AdminCheckTabletsStmt;
+import com.starrocks.sql.ast.AdminInsertKVTestDataStmt;
+import com.starrocks.sql.ast.AdminRebuildKVIndexStmt;
 import com.starrocks.sql.ast.AdminRepairTableStmt;
 import com.starrocks.sql.ast.AdminSetConfigStmt;
 import com.starrocks.sql.ast.AdminSetPartitionVersionStmt;
@@ -105,6 +107,39 @@ public class AdminStmtAnalyzer {
         @Override
         public Void visitAdminShowKVIndexDataStatement(
                 AdminShowKVIndexDataStmt stmt, ConnectContext session) {
+            if (Strings.isNullOrEmpty(stmt.getIndexName())) {
+                throw new SemanticException("INDEX name is required", stmt.getPos());
+            }
+            return null;
+        }
+
+        @Override
+        public Void visitAdminInsertKVTestDataStatement(
+                AdminInsertKVTestDataStmt stmt, ConnectContext session) {
+            if (Strings.isNullOrEmpty(stmt.getCatalogName())) {
+                throw new SemanticException("Catalog name is required for ADMIN INSERT KV_TEST_DATA", stmt.getPos());
+            }
+            if (Strings.isNullOrEmpty(stmt.getDbName())) {
+                throw new SemanticException("Database name is required for ADMIN INSERT KV_TEST_DATA", stmt.getPos());
+            }
+            if (stmt.getColumnNames() == null || stmt.getColumnNames().isEmpty()) {
+                throw new SemanticException("COLUMNS list is required", stmt.getPos());
+            }
+            if (stmt.getRows() == null || stmt.getRows().isEmpty()) {
+                throw new SemanticException("VALUES list is required", stmt.getPos());
+            }
+            return null;
+        }
+
+        @Override
+        public Void visitAdminRebuildKVIndexStatement(
+                AdminRebuildKVIndexStmt stmt, ConnectContext session) {
+            if (Strings.isNullOrEmpty(stmt.getCatalogName())) {
+                throw new SemanticException("Catalog name is required for ADMIN REBUILD KV_INDEX", stmt.getPos());
+            }
+            if (Strings.isNullOrEmpty(stmt.getDbName())) {
+                throw new SemanticException("Database name is required for ADMIN REBUILD KV_INDEX", stmt.getPos());
+            }
             if (Strings.isNullOrEmpty(stmt.getIndexName())) {
                 throw new SemanticException("INDEX name is required", stmt.getPos());
             }

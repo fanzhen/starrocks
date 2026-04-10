@@ -52,6 +52,7 @@ import com.starrocks.catalog.Database;
 import com.starrocks.catalog.ExternalOlapTable;
 import com.starrocks.catalog.IcebergTable;
 import com.starrocks.catalog.InternalCatalog;
+import com.starrocks.catalog.KVIndexMetadataManager;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.ResourceGroup;
 import com.starrocks.catalog.ResourceGroupClassifier;
@@ -88,6 +89,7 @@ import com.starrocks.common.util.TimeUtils;
 import com.starrocks.common.util.UUIDUtil;
 import com.starrocks.common.util.concurrent.lock.LockType;
 import com.starrocks.common.util.concurrent.lock.Locker;
+import com.starrocks.connector.CatalogConnector;
 import com.starrocks.connector.ConnectorMetadata;
 import com.starrocks.connector.exception.StarRocksConnectorException;
 import com.starrocks.connector.iceberg.IcebergMetadata;
@@ -169,6 +171,8 @@ import com.starrocks.sql.ast.AddBackendBlackListStmt;
 import com.starrocks.sql.ast.AddComputeNodeBlackListStmt;
 import com.starrocks.sql.ast.AddSqlBlackListStmt;
 import com.starrocks.sql.ast.AddSqlDigestBlackListStmt;
+import com.starrocks.sql.ast.AdminInsertKVTestDataStmt;
+import com.starrocks.sql.ast.AdminRebuildKVIndexStmt;
 import com.starrocks.sql.ast.AdminSetConfigStmt;
 import com.starrocks.sql.ast.AnalyzeProfileStmt;
 import com.starrocks.sql.ast.AnalyzeStmt;
@@ -1219,6 +1223,10 @@ public class StmtExecutor {
                 handlePlanAdvisorStmt();
             } else if (parsedStmt instanceof TranslateStmt) {
                 handleTranslateStmt();
+            } else if (parsedStmt instanceof AdminInsertKVTestDataStmt) {
+                handleAdminInsertKVTestData();
+            } else if (parsedStmt instanceof AdminRebuildKVIndexStmt) {
+                handleAdminRebuildKVIndex();
             } else if (parsedStmt instanceof BeginStmt) {
                 if (context.getSessionVariable().isEnableSqlTransaction()) {
                     TransactionStmtExecutor.beginStmt(context, (BeginStmt) parsedStmt);
@@ -3982,6 +3990,169 @@ public class StmtExecutor {
             return null;
         }
         return currentUser;
+    }
+
+    private void handleAdminInsertKVTestData() throws Exception {
+        AdminInsertKVTestDataStmt stmt = (AdminInsertKVTestDataStmt) parsedStmt;
+        String catalogName = stmt.getCatalogName();
+        String dbName = stmt.getDbName();
+        String tableName = stmt.getTableName();
+        List<String> columnNames = stmt.getColumnNames();
+        List<List<String>> rows = stmt.getRows();
+
+        // Get the Paimon native table
+        org.apache.paimon.catalog.Catalog nativeCatalog = getPaimonNativeCatalog(catalogName);
+        org.apache.paimon.table.Table paimonTable;
+        try {
+            paimonTable = nativeCatalog.getTable(
+                    org.apache.paimon.catalog.Identifier.create(dbName, tableName));
+        } catch (org.apache.paimon.catalog.Catalog.TableNotExistException e) {
+            throw new DdlException("Paimon table not found: " + dbName + "." + tableName);
+        }
+
+        // Resolve column types from table schema
+        org.apache.paimon.types.RowType rowType = paimonTable.rowType();
+        List<String> allFieldNames = rowType.getFieldNames();
+        List<org.apache.paimon.types.DataField> allFields = rowType.getFields();
+        int[] colIndices = new int[columnNames.size()];
+        org.apache.paimon.types.DataType[] colTypes = new org.apache.paimon.types.DataType[columnNames.size()];
+        for (int i = 0; i < columnNames.size(); i++) {
+            int idx = allFieldNames.indexOf(columnNames.get(i));
+            if (idx < 0) {
+                throw new DdlException("Column not found in Paimon table: " + columnNames.get(i));
+            }
+            colIndices[i] = idx;
+            colTypes[i] = allFields.get(idx).type();
+        }
+
+        // Write data using Paimon BatchWriteBuilder
+        org.apache.paimon.table.sink.BatchTableWrite write = paimonTable.newBatchWriteBuilder().newWrite();
+        org.apache.paimon.table.sink.BatchTableCommit commit = paimonTable.newBatchWriteBuilder().newCommit();
+        try {
+            for (List<String> rowValues : rows) {
+                org.apache.paimon.data.GenericRow row = new org.apache.paimon.data.GenericRow(allFields.size());
+                for (int f = 0; f < allFields.size(); f++) {
+                    row.setField(f, null);
+                }
+                for (int i = 0; i < columnNames.size(); i++) {
+                    String val = rowValues.get(i);
+                    row.setField(colIndices[i], convertValueForPaimon(val, colTypes[i]));
+                }
+                write.write(row);
+            }
+            commit.commit(write.prepareCommit());
+        } finally {
+            try {
+                write.close();
+            } catch (Exception e) {
+                LOG.warn("Failed to close BatchTableWrite", e);
+            }
+            try {
+                commit.close();
+            } catch (Exception e) {
+                LOG.warn("Failed to close BatchTableCommit", e);
+            }
+        }
+
+        context.getState().setOk(rows.size(), 0, "Inserted " + rows.size() + " rows into Paimon table");
+    }
+
+    private Object convertValueForPaimon(String val, org.apache.paimon.types.DataType dataType) {
+        if (val == null || "NULL".equalsIgnoreCase(val)) {
+            return null;
+        }
+        switch (dataType.getTypeRoot()) {
+            case BIGINT:
+                return Long.parseLong(val);
+            case INTEGER:
+                return Integer.parseInt(val);
+            case SMALLINT:
+                return Short.parseShort(val);
+            case TINYINT:
+                return Byte.parseByte(val);
+            case FLOAT:
+                return Float.parseFloat(val);
+            case DOUBLE:
+                return Double.parseDouble(val);
+            case VARCHAR:
+            case CHAR:
+                return org.apache.paimon.data.BinaryString.fromString(val);
+            case BOOLEAN:
+                return Boolean.parseBoolean(val);
+            default:
+                return org.apache.paimon.data.BinaryString.fromString(val);
+        }
+    }
+
+    private void handleAdminRebuildKVIndex() throws Exception {
+        AdminRebuildKVIndexStmt stmt = (AdminRebuildKVIndexStmt) parsedStmt;
+        String catalogName = stmt.getCatalogName();
+        String dbName = stmt.getDbName();
+        String tableName = stmt.getTableName();
+        String indexName = stmt.getIndexName();
+
+        // Verify index exists and not already building
+        KVIndexMetadataManager kvMgr = GlobalStateMgr.getCurrentState().getKVIndexMetadataManager();
+        KVIndexMetadataManager.KVIndexMeta meta = kvMgr.getIndexMeta(catalogName, dbName, tableName, indexName);
+        if (meta == null) {
+            throw new DdlException("KV index '" + indexName + "' not found on "
+                    + catalogName + "." + dbName + "." + tableName);
+        }
+        if (meta.getBuildState() == KVIndexMetadataManager.BuildState.BUILDING) {
+            throw new DdlException("KV index '" + indexName + "' is already building");
+        }
+
+        // Get Paimon native table
+        org.apache.paimon.catalog.Catalog nativeCatalog = getPaimonNativeCatalog(catalogName);
+        org.apache.paimon.table.Table paimonTable;
+        try {
+            paimonTable = nativeCatalog.getTable(
+                    org.apache.paimon.catalog.Identifier.create(dbName, tableName));
+        } catch (org.apache.paimon.catalog.Catalog.TableNotExistException e) {
+            throw new DdlException("Paimon table not found: " + dbName + "." + tableName);
+        }
+
+        // Get value column names from existing index metadata
+        String[] existingColNames = meta.getColumnNames();
+        List<String> valueColumnNames = new java.util.ArrayList<>();
+        if (existingColNames != null) {
+            for (String cn : existingColNames) {
+                valueColumnNames.add(cn);
+            }
+        } else {
+            List<com.starrocks.catalog.ColumnId> columnIds = meta.getColumns();
+            if (columnIds != null) {
+                for (com.starrocks.catalog.ColumnId cid : columnIds) {
+                    valueColumnNames.add(cid.getId());
+                }
+            }
+        }
+
+        // Submit rebuild task (reuses existing doBuild which does full rebuild)
+        GlobalStateMgr.getCurrentState().getKVIndexBuildExecutor()
+                .submitBuildTask(catalogName, dbName, tableName, indexName, valueColumnNames, paimonTable);
+
+        context.getState().setOk(0, 0,
+                "KV index rebuild submitted for " + catalogName + "." + dbName + "." + tableName + "/" + indexName);
+    }
+
+    private org.apache.paimon.catalog.Catalog getPaimonNativeCatalog(String catalogName) throws DdlException {
+        // Trigger lazy initialization by accessing the connector metadata
+        CatalogConnector catalogConnector = GlobalStateMgr.getCurrentState()
+                .getConnectorMgr().getConnector(catalogName);
+        if (catalogConnector == null) {
+            throw new DdlException("Catalog not found: " + catalogName);
+        }
+        // getMetadata() triggers lazy init of PaimonConnector which registers native catalog
+        catalogConnector.getMetadata();
+
+        org.apache.paimon.catalog.Catalog nativeCatalog =
+                GlobalStateMgr.getCurrentState().getConnectorTableMetadataProcessor()
+                        .getPaimonCatalog(catalogName);
+        if (nativeCatalog == null) {
+            throw new DdlException("Catalog '" + catalogName + "' is not a Paimon catalog or not initialized");
+        }
+        return nativeCatalog;
     }
 
     public double getMaxFilterRatio(DmlStmt dmlStmt) {

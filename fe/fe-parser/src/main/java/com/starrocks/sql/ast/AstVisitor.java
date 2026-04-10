@@ -1121,6 +1121,14 @@ public interface AstVisitor<R, C> {
         return visitShowStatement(statement, context);
     }
 
+    default R visitAdminInsertKVTestDataStatement(AdminInsertKVTestDataStmt statement, C context) {
+        return visitStatement(statement, context);
+    }
+
+    default R visitAdminRebuildKVIndexStatement(AdminRebuildKVIndexStmt statement, C context) {
+        return visitStatement(statement, context);
+    }
+
     default R visitDropCNGroupStatement(DropCnGroupStmt statement, C context) {
         return visitDDLStatement(statement, context);
     }

@@ -68,6 +68,8 @@ import com.starrocks.sql.ast.AddSqlDigestBlackListStmt;
 import com.starrocks.sql.ast.AdminAlterAutomatedSnapshotIntervalStmt;
 import com.starrocks.sql.ast.AdminCancelRepairTableStmt;
 import com.starrocks.sql.ast.AdminCheckTabletsStmt;
+import com.starrocks.sql.ast.AdminInsertKVTestDataStmt;
+import com.starrocks.sql.ast.AdminRebuildKVIndexStmt;
 import com.starrocks.sql.ast.AdminRepairTableStmt;
 import com.starrocks.sql.ast.AdminSetAutomatedSnapshotOffStmt;
 import com.starrocks.sql.ast.AdminSetAutomatedSnapshotOnStmt;
@@ -2895,6 +2897,84 @@ public class AstBuilder extends com.starrocks.sql.parser.StarRocksBaseVisitor<Pa
         }
         String indexName = ((Identifier) visit(context.identifier())).getValue();
         return new AdminShowKVIndexDataStmt(catalogName, dbName, tableName, indexName, createPos(context));
+    }
+
+    @Override
+    public ParseNode visitAdminInsertKVTestDataStatement(
+            com.starrocks.sql.parser.StarRocksParser.AdminInsertKVTestDataStatementContext context) {
+        QualifiedName qualifiedName = getQualifiedName(context.qualifiedName());
+        List<String> parts = qualifiedName.getParts();
+        String catalogName;
+        String dbName;
+        String tableName;
+        if (parts.size() == 3) {
+            catalogName = parts.get(0);
+            dbName = parts.get(1);
+            tableName = parts.get(2);
+        } else if (parts.size() == 2) {
+            catalogName = null;
+            dbName = parts.get(0);
+            tableName = parts.get(1);
+        } else {
+            catalogName = null;
+            dbName = null;
+            tableName = parts.get(0);
+        }
+
+        List<String> columnNames = new ArrayList<>();
+        for (com.starrocks.sql.parser.StarRocksParser.IdentifierContext idCtx : context.identifier()) {
+            columnNames.add(((Identifier) visit(idCtx)).getValue());
+        }
+
+        // Parse VALUES rows: each row is a group of expressions between parentheses
+        // Grammar: VALUES '(' expression (',' expression)* ')' (',' '(' expression (',' expression)* ')')*
+        // All expressions are flattened in context.expression(), we split by column count
+        List<com.starrocks.sql.parser.StarRocksParser.ExpressionContext> allExprs = context.expression();
+        int numCols = columnNames.size();
+        List<List<String>> rows = new ArrayList<>();
+        for (int i = 0; i < allExprs.size(); i += numCols) {
+            List<String> row = new ArrayList<>();
+            for (int j = 0; j < numCols && (i + j) < allExprs.size(); j++) {
+                Expr expr = (Expr) visit(allExprs.get(i + j));
+                if (expr instanceof StringLiteral) {
+                    row.add(((StringLiteral) expr).getStringValue());
+                } else if (expr instanceof LiteralExpr) {
+                    row.add(((LiteralExpr) expr).getStringValue());
+                } else {
+                    // For complex expressions like negative numbers (-0.88)
+                    // use the raw text from the token
+                    row.add(allExprs.get(i + j).getText());
+                }
+            }
+            rows.add(row);
+        }
+
+        return new AdminInsertKVTestDataStmt(catalogName, dbName, tableName, columnNames, rows, createPos(context));
+    }
+
+    @Override
+    public ParseNode visitAdminRebuildKVIndexStatement(
+            com.starrocks.sql.parser.StarRocksParser.AdminRebuildKVIndexStatementContext context) {
+        QualifiedName qualifiedName = getQualifiedName(context.qualifiedName());
+        List<String> parts = qualifiedName.getParts();
+        String catalogName;
+        String dbName;
+        String tableName;
+        if (parts.size() == 3) {
+            catalogName = parts.get(0);
+            dbName = parts.get(1);
+            tableName = parts.get(2);
+        } else if (parts.size() == 2) {
+            catalogName = null;
+            dbName = parts.get(0);
+            tableName = parts.get(1);
+        } else {
+            catalogName = null;
+            dbName = null;
+            tableName = parts.get(0);
+        }
+        String indexName = ((Identifier) visit(context.identifier())).getValue();
+        return new AdminRebuildKVIndexStmt(catalogName, dbName, tableName, indexName, createPos(context));
     }
 
     @Override

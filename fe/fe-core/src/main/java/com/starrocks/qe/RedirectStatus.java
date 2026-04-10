@@ -24,6 +24,8 @@ import com.starrocks.sql.ast.AddSqlDigestBlackListStmt;
 import com.starrocks.sql.ast.AdminAlterAutomatedSnapshotIntervalStmt;
 import com.starrocks.sql.ast.AdminCancelRepairTableStmt;
 import com.starrocks.sql.ast.AdminCheckTabletsStmt;
+import com.starrocks.sql.ast.AdminInsertKVTestDataStmt;
+import com.starrocks.sql.ast.AdminRebuildKVIndexStmt;
 import com.starrocks.sql.ast.AdminRepairTableStmt;
 import com.starrocks.sql.ast.AdminSetAutomatedSnapshotOffStmt;
 import com.starrocks.sql.ast.AdminSetAutomatedSnapshotOnStmt;
@@ -737,6 +739,18 @@ public class RedirectStatus {
         @Override
         public RedirectStatus visitAdminShowKVIndexDataStatement(AdminShowKVIndexDataStmt statement,
                                                                  Void context) {
+            return RedirectStatus.NO_FORWARD;
+        }
+
+        @Override
+        public RedirectStatus visitAdminInsertKVTestDataStatement(AdminInsertKVTestDataStmt statement,
+                                                                  Void context) {
+            return RedirectStatus.NO_FORWARD;
+        }
+
+        @Override
+        public RedirectStatus visitAdminRebuildKVIndexStatement(AdminRebuildKVIndexStmt statement,
+                                                                Void context) {
             return RedirectStatus.NO_FORWARD;
         }
 

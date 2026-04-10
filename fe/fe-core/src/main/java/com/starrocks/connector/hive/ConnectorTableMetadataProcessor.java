@@ -92,6 +92,10 @@ public class ConnectorTableMetadataProcessor extends FrontendDaemon {
         paimonCatalogs.put(catalogName, paimonCatalog);
     }
 
+    public Catalog getPaimonCatalog(String catalogName) {
+        return paimonCatalogs.get(catalogName);
+    }
+
     public void unRegisterPaimonCatalog(String catalogName) {
         LOG.info("unregister to caching paimon catalog on {} in the ConnectorTableMetadataProcessor", catalogName);
         paimonCatalogs.remove(catalogName);

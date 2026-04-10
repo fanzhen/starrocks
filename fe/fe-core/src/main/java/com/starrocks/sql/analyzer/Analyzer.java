@@ -21,6 +21,8 @@ import com.starrocks.sql.ast.AddSqlDigestBlackListStmt;
 import com.starrocks.sql.ast.AdminAlterAutomatedSnapshotIntervalStmt;
 import com.starrocks.sql.ast.AdminCancelRepairTableStmt;
 import com.starrocks.sql.ast.AdminCheckTabletsStmt;
+import com.starrocks.sql.ast.AdminInsertKVTestDataStmt;
+import com.starrocks.sql.ast.AdminRebuildKVIndexStmt;
 import com.starrocks.sql.ast.AdminRepairTableStmt;
 import com.starrocks.sql.ast.AdminSetAutomatedSnapshotOffStmt;
 import com.starrocks.sql.ast.AdminSetAutomatedSnapshotOnStmt;
@@ -305,6 +307,20 @@ public class Analyzer {
         @Override
         public Void visitAdminShowKVIndexDataStatement(AdminShowKVIndexDataStmt statement,
                                                        ConnectContext session) {
+            AdminStmtAnalyzer.analyze(statement, session);
+            return null;
+        }
+
+        @Override
+        public Void visitAdminInsertKVTestDataStatement(AdminInsertKVTestDataStmt statement,
+                                                        ConnectContext session) {
+            AdminStmtAnalyzer.analyze(statement, session);
+            return null;
+        }
+
+        @Override
+        public Void visitAdminRebuildKVIndexStatement(AdminRebuildKVIndexStmt statement,
+                                                      ConnectContext session) {
             AdminStmtAnalyzer.analyze(statement, session);
             return null;
         }

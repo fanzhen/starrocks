@@ -122,6 +122,8 @@ statement
     | adminShowConfigStatement
     | adminShowAutomatedSnapshotStatement
     | adminShowKVIndexDataStatement
+    | adminInsertKVTestDataStatement
+    | adminRebuildKVIndexStatement
     | adminShowReplicaDistributionStatement
     | adminShowReplicaStatusStatement
     | adminShowTabletStatusStatement
@@ -788,6 +790,16 @@ adminShowAutomatedSnapshotStatement
 
 adminShowKVIndexDataStatement
     : ADMIN SHOW KV_INDEX_DATA FROM qualifiedName INDEX identifier
+    ;
+
+adminInsertKVTestDataStatement
+    : ADMIN INSERT KV_TEST_DATA INTO qualifiedName
+      COLUMNS '(' identifier (',' identifier)* ')'
+      VALUES '(' expression (',' expression)* ')' (',' '(' expression (',' expression)* ')')*
+    ;
+
+adminRebuildKVIndexStatement
+    : ADMIN REBUILD KV_INDEX ON qualifiedName INDEX identifier
     ;
 
 adminShowReplicaDistributionStatement
@@ -3323,7 +3335,7 @@ nonReserved
     | VALUE | VARBINARY | VARIABLES | VIEW | VIEWS | VERBOSE | VERSION | VOLUME | VOLUMES
     | WARNINGS | WEEK | WHITELIST | WORK | WRITE  | WAREHOUSE | WAREHOUSES
     | YEAR
-    | DOTDOTDOT | NGRAMBF | VECTOR | KV | KV_INDEX_DATA
+    | DOTDOTDOT | NGRAMBF | VECTOR | KV | KV_INDEX | KV_INDEX_DATA | KV_TEST_DATA | REBUILD
     | FIELD
     | ARRAY_ELEMENT
     | PERSISTENT
