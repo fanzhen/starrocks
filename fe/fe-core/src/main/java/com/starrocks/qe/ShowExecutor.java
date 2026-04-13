@@ -73,6 +73,7 @@ import com.starrocks.catalog.MaterializedIndexMeta;
 import com.starrocks.catalog.MaterializedView;
 import com.starrocks.catalog.MetadataViewer;
 import com.starrocks.catalog.OlapTable;
+import com.starrocks.catalog.PaimonTable;
 import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.PartitionNames;
 import com.starrocks.catalog.PhysicalPartition;
@@ -2626,10 +2627,12 @@ public class ShowExecutor {
                                 index.getComment()));
                     }
                 } else {
-                    // External tables: check KV index metadata
+                    // External tables: check KV index metadata (with manifest auto-discovery)
                     KVIndexMetadataManager kvMgr = GlobalStateMgr.getCurrentState().getKVIndexMetadataManager();
+                    String tableLocation = (table instanceof PaimonTable)
+                            ? ((PaimonTable) table).getTableLocation() : null;
                     List<KVIndexMetadataManager.KVIndexMeta> kvIndexMetas =
-                            kvMgr.getIndexMetas(catalogName, dbName, table.getName());
+                            kvMgr.getIndexMetas(catalogName, dbName, table.getName(), tableLocation);
                     for (KVIndexMetadataManager.KVIndexMeta meta : kvIndexMetas) {
                         List<String> colNames = meta.getColumns().stream()
                                 .map(ColumnId::getId)

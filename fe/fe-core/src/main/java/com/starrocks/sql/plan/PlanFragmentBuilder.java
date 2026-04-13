@@ -1473,7 +1473,8 @@ public class PlanFragmentBuilder {
             String tableName = paimonTable.getCatalogTableName();
 
             KVIndexMetadataManager kvMgr = GlobalStateMgr.getCurrentState().getKVIndexMetadataManager();
-            List<KVIndexMetadataManager.KVIndexMeta> metas = kvMgr.getIndexMetas(catalogName, dbName, tableName);
+            List<KVIndexMetadataManager.KVIndexMeta> metas =
+                    kvMgr.getIndexMetas(catalogName, dbName, tableName, paimonTable.getTableLocation());
             if (metas.isEmpty()) {
                 return null;
             }
@@ -1523,6 +1524,7 @@ public class PlanFragmentBuilder {
             kvScanNode.setLimit(node.getLimit());
             kvScanNode.computeStatistics(optExpression.getStatistics());
             currentExecGroup.add(kvScanNode, true);
+            registerScanNode(node, kvScanNode, context);
 
             PlanFragment fragment = new PlanFragment(
                     context.getNextFragmentId(), kvScanNode, DataPartition.UNPARTITIONED);

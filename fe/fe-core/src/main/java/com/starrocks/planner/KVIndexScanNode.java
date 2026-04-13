@@ -18,11 +18,12 @@ import com.starrocks.thrift.TExplainLevel;
 import com.starrocks.thrift.TKVIndexScanNode;
 import com.starrocks.thrift.TPlanNode;
 import com.starrocks.thrift.TPlanNodeType;
+import com.starrocks.thrift.TScanRangeLocations;
 
+import java.util.Collections;
 import java.util.List;
 
-public class KVIndexScanNode extends PlanNode {
-    private final TupleDescriptor tupleDesc;
+public class KVIndexScanNode extends ScanNode {
     private final String sstFilePath;
     private final List<String> valueColumnNames;
     private final List<String> valueColumnTypes;
@@ -31,22 +32,23 @@ public class KVIndexScanNode extends PlanNode {
                            String sstFilePath,
                            List<String> valueColumnNames,
                            List<String> valueColumnTypes) {
-        super(id, desc.getId().asList(), "KVIndexScan");
-        this.tupleDesc = desc;
+        super(id, desc, "KVIndexScan");
         this.sstFilePath = sstFilePath;
         this.valueColumnNames = valueColumnNames;
         this.valueColumnTypes = valueColumnTypes;
     }
 
-    public TupleDescriptor getTupleDesc() {
-        return tupleDesc;
+    @Override
+    public List<TScanRangeLocations> getScanRangeLocations(long maxScanRangeLength) {
+        // KV index scan reads a single local SST file, no distributed scan ranges needed.
+        return Collections.emptyList();
     }
 
     @Override
     protected void toThrift(TPlanNode msg) {
         msg.node_type = TPlanNodeType.KV_INDEX_SCAN_NODE;
         TKVIndexScanNode kvNode = new TKVIndexScanNode();
-        kvNode.setTuple_id(tupleDesc.getId().asInt());
+        kvNode.setTuple_id(desc.getId().asInt());
         kvNode.setSst_file_path(sstFilePath);
         kvNode.setValue_column_names(valueColumnNames);
         kvNode.setValue_column_types(valueColumnTypes);

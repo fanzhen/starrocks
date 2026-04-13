@@ -13,8 +13,8 @@
 | 3 | Full Build 路径 | CN 构建任务 + Manifest | `CREATE INDEX` 触发构建 → 验证 SST 文件存在 | Stage 1, 2 |
 | 4 | Read 路径集成 | FE Java SSTable Reader + ADMIN SHOW KV_INDEX_DATA | SQL 查询返回 SSTable 全部数据 | Stage 3 |
 | 4.5 | Query Path 集成 | FE KVIndexScanNode + BE KVIndexScanOperator | `SET enable_kv_index_scan=true; SELECT` 返回正确数据 | Stage 4 |
-| 5 | 后台维护 | 增量 Build + Purge + Compaction | 追加数据后自动增量构建 + 查询验证 | Stage 3 |
-| 6 | 性能优化 | MultiGet 批量优化 + block cache | perf 火焰图 + benchmark 对比 | Stage 4 |
+| 5 | 手动 Rebuild + 测试数据写入 | ADMIN INSERT KV_TEST_DATA + ADMIN REBUILD KV_INDEX | insert → rebuild → KV scan 一致性验证 | Stage 3 |
+| 6 | 性能优化 | Column::serialize 编码 + 流式 scan + batch decode | KV scan ≤ column scan latency (parity) | Stage 4 |
 
 ```
 依赖关系:

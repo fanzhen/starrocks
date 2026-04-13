@@ -14,20 +14,32 @@
 
 package com.starrocks.catalog;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.starrocks.common.DdlException;
 import com.starrocks.sql.ast.IndexDef;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Manages KV index metadata for external tables (e.g., Paimon).
- * v1: in-memory only, not persisted across FE restarts.
+ * In-memory cache backed by manifest.json files on disk.
+ * On first access for a table, loads from manifest if present.
  */
 public class KVIndexMetadataManager {
+
+    private static final Logger LOG = LogManager.getLogger(KVIndexMetadataManager.class);
 
     public enum BuildState {
         PENDING,
@@ -224,6 +236,11 @@ public class KVIndexMetadataManager {
 
     public synchronized void dropIndex(String catalog, String db, String table, String indexName)
             throws DdlException {
+        dropIndex(catalog, db, table, indexName, null);
+    }
+
+    public synchronized void dropIndex(String catalog, String db, String table, String indexName,
+                                        String tableLocation) throws DdlException {
         String key = makeKey(catalog, db, table);
         List<KVIndexMeta> metas = indexMap.get(key);
         if (metas == null || metas.stream().noneMatch(
@@ -233,6 +250,13 @@ public class KVIndexMetadataManager {
         metas.removeIf(m -> m.getIndexName().equalsIgnoreCase(indexName));
         if (metas.isEmpty()) {
             indexMap.remove(key);
+        }
+
+        // Delete manifest directory on disk
+        if (tableLocation != null) {
+            String localPath = stripFilePrefix(tableLocation);
+            String indexDir = localPath + "/.starrocks_kv_index/" + indexName;
+            deleteDirectory(new File(indexDir));
         }
     }
 
@@ -259,6 +283,18 @@ public class KVIndexMetadataManager {
     }
 
     /**
+     * Get index metas with on-demand manifest loading.
+     * If no metas are cached for this table, attempts to load from manifest.json on disk.
+     */
+    public List<KVIndexMeta> getIndexMetas(String catalog, String db, String table, String tableLocation) {
+        String key = makeKey(catalog, db, table);
+        if (!indexMap.containsKey(key) && tableLocation != null) {
+            loadFromManifest(tableLocation, catalog, db, table);
+        }
+        return getIndexMetas(catalog, db, table);
+    }
+
+    /**
      * Backward-compatible: return Index objects for existing callers.
      */
     public List<Index> getIndexes(String catalog, String db, String table) {
@@ -268,5 +304,117 @@ public class KVIndexMetadataManager {
             indexes.add(meta.toIndex());
         }
         return indexes;
+    }
+
+    private void loadFromManifest(String tableLocation, String catalog, String db, String table) {
+        String localPath = stripFilePrefix(tableLocation);
+        String kvIndexDir = localPath + "/.starrocks_kv_index";
+        File dir = new File(kvIndexDir);
+        if (!dir.exists() || !dir.isDirectory()) {
+            return;
+        }
+
+        File[] indexDirs = dir.listFiles(File::isDirectory);
+        if (indexDirs == null) {
+            return;
+        }
+
+        for (File indexDir : indexDirs) {
+            File manifestFile = new File(indexDir, "manifest.json");
+            if (!manifestFile.exists()) {
+                continue;
+            }
+
+            try {
+                KVIndexMeta meta = parseManifest(manifestFile);
+                if (meta != null) {
+                    meta.setBuildState(BuildState.READY);
+                    String key = makeKey(catalog, db, table);
+                    synchronized (this) {
+                        List<KVIndexMeta> metas = indexMap.computeIfAbsent(key, k -> new ArrayList<>());
+                        boolean exists = metas.stream()
+                                .anyMatch(m -> m.getIndexName().equalsIgnoreCase(meta.getIndexName()));
+                        if (!exists) {
+                            metas.add(meta);
+                            LOG.info("Loaded KV index '{}' from manifest: {}", meta.getIndexName(), manifestFile);
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                LOG.warn("Failed to parse manifest file: {}", manifestFile, e);
+            }
+        }
+    }
+
+    private KVIndexMeta parseManifest(File manifestFile) throws IOException {
+        String json = new String(Files.readAllBytes(manifestFile.toPath()));
+        JsonObject manifest = JsonParser.parseString(json).getAsJsonObject();
+
+        String indexName = manifest.get("indexName").getAsString();
+        long snapshotId = manifest.has("baseSnapshotId") ? manifest.get("baseSnapshotId").getAsLong() : -1;
+        long rowCount = manifest.has("rowCount") ? manifest.get("rowCount").getAsLong() : 0;
+
+        // Parse columns
+        JsonArray columnsArr = manifest.getAsJsonArray("columns");
+        List<ColumnId> columnIds = new ArrayList<>();
+        String[] columnNames = new String[columnsArr.size()];
+        String[] columnTypes = new String[columnsArr.size()];
+        for (int i = 0; i < columnsArr.size(); i++) {
+            JsonObject col = columnsArr.get(i).getAsJsonObject();
+            String name = col.get("name").getAsString();
+            columnIds.add(ColumnId.create(name));
+            columnNames[i] = name;
+            columnTypes[i] = col.get("type").getAsString();
+        }
+
+        // Parse SST file info
+        String sstFilePath = null;
+        long sstFileSize = 0;
+        if (manifest.has("sstFiles")) {
+            JsonArray sstFiles = manifest.getAsJsonArray("sstFiles");
+            if (sstFiles.size() > 0) {
+                JsonObject sstFile = sstFiles.get(0).getAsJsonObject();
+                sstFilePath = sstFile.get("path").getAsString();
+                sstFileSize = sstFile.get("size").getAsLong();
+            }
+        }
+
+        KVIndexMeta meta = new KVIndexMeta(indexName, columnIds, IndexDef.IndexType.KV, "", new HashMap<>());
+        meta.setBaseSnapshotId(snapshotId);
+        meta.setColumnNames(columnNames);
+        meta.setColumnTypes(columnTypes);
+        meta.setSstFilePath(sstFilePath);
+        meta.setSstFileSize(sstFileSize);
+        meta.setIndexedRowCount(rowCount);
+        meta.setManifestPath(manifestFile.getAbsolutePath());
+        return meta;
+    }
+
+    static String stripFilePrefix(String location) {
+        String path = location;
+        if (path.startsWith("file:")) {
+            path = path.substring(5);
+            while (path.startsWith("//")) {
+                path = path.substring(1);
+            }
+        }
+        return path;
+    }
+
+    private static void deleteDirectory(File dir) {
+        if (!dir.exists()) {
+            return;
+        }
+        File[] files = dir.listFiles();
+        if (files != null) {
+            for (File f : files) {
+                if (f.isDirectory()) {
+                    deleteDirectory(f);
+                } else {
+                    f.delete();
+                }
+            }
+        }
+        dir.delete();
     }
 }

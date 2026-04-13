@@ -37,7 +37,12 @@ KVIndexScanOperator::KVIndexScanOperator(OperatorFactory* factory, int32_t id, i
           _sst_file_path(std::move(sst_file_path)),
           _value_column_names(std::move(value_column_names)),
           _value_column_types(std::move(value_column_types)),
-          _tuple_desc(tuple_desc) {}
+          _tuple_desc(tuple_desc) {
+    // Only driver 0 produces data; other drivers finish immediately to avoid duplicates.
+    if (driver_sequence != 0) {
+        _is_finished = true;
+    }
+}
 
 Status KVIndexScanOperator::_init_reader() {
     // Build value schema from column names/types

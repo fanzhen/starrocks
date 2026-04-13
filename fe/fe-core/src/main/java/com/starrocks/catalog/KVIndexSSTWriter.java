@@ -250,10 +250,7 @@ public class KVIndexSSTWriter implements Closeable {
             case "STRING":
             case "CHAR": {
                 byte[] strBytes = value.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
-                // BinaryColumn::serialize: uint32_t length (native/LE) + content
-                // The serialize format is: column_separator(1B 0x00) + length(4B LE) + data
-                // Actually looking at BinaryColumn::serialize more carefully:
-                // binary_size as uint32_t LE + data bytes
+                // BinaryColumn::serialize: uint32_t length (LE) + data bytes
                 ByteBuffer bb = ByteBuffer.allocate(4 + strBytes.length).order(ByteOrder.LITTLE_ENDIAN);
                 bb.putInt(strBytes.length);
                 bb.put(strBytes);

@@ -1116,9 +1116,20 @@ public class PaimonMetadata implements ConnectorMetadata {
                                 indexDef.getIndexName(), indexDef.getColumns(), nativeTable);
             } else if (clause instanceof DropIndexClause) {
                 DropIndexClause dropIndex = (DropIndexClause) clause;
+                // Get table location for manifest cleanup
+                String tableLocation = null;
+                try {
+                    org.apache.paimon.table.Table dropNativeTable = paimonNativeCatalog.getTable(
+                            Identifier.create(stmt.getDbName(), stmt.getTableName()));
+                    if (dropNativeTable instanceof DataTable) {
+                        tableLocation = ((DataTable) dropNativeTable).location().toString();
+                    }
+                } catch (Catalog.TableNotExistException e) {
+                    // Table gone, proceed with in-memory cleanup only
+                }
                 GlobalStateMgr.getCurrentState().getKVIndexMetadataManager()
                         .dropIndex(stmt.getCatalogName(), stmt.getDbName(), stmt.getTableName(),
-                                dropIndex.getIndexName());
+                                dropIndex.getIndexName(), tableLocation);
             } else {
                 throw new DdlException("Paimon table doesn't support this ALTER operation");
             }

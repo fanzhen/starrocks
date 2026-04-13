@@ -190,7 +190,7 @@ public class KVIndexBuildExecutor {
 
         // 8. Write manifest.json
         writeManifest(manifestPath, indexName, snapshotId, entries.size(), sstFileSize,
-                sstFilePath, valueColumnNames, valueColTypeNames);
+                sstFilePath, valueColumnNames, valueColTypeNames, catalogName, dbName, tableName);
 
         // 9. Update metadata to READY
         meta.setColumnNames(valueColumnNames.toArray(new String[0]));
@@ -276,10 +276,14 @@ public class KVIndexBuildExecutor {
 
     private void writeManifest(String manifestPath, String indexName, long snapshotId,
                                long rowCount, long sstFileSize, String sstFilePath,
-                               List<String> columnNames, String[] columnTypes) throws IOException {
+                               List<String> columnNames, String[] columnTypes,
+                               String catalogName, String dbName, String tableName) throws IOException {
         JsonObject manifest = new JsonObject();
         manifest.addProperty("indexName", indexName);
         manifest.addProperty("indexType", "KV");
+        manifest.addProperty("catalogName", catalogName);
+        manifest.addProperty("dbName", dbName);
+        manifest.addProperty("tableName", tableName);
         manifest.addProperty("baseSnapshotId", snapshotId);
         manifest.addProperty("rowCount", rowCount);
         manifest.addProperty("buildTimeMs", System.currentTimeMillis());
