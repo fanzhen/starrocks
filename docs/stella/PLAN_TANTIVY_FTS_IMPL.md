@@ -105,19 +105,22 @@ target_include_directories(starrocks_be PRIVATE
 
 ### 1.1 代码任务
 
-| 步骤 | 文件 | 内容 |
-|------|------|------|
-| 1.1.1 | `tantivy_ffi/Cargo.toml` | 新建 Rust 项目，依赖 tantivy=0.22, tantivy-jieba=0.10 |
-| 1.1.2 | `tantivy_ffi/src/lib.rs` | `extern "C"` 入口，re-export writer/reader/tokenizer |
-| 1.1.3 | `tantivy_ffi/src/writer.rs` | TantivyWriter: create/add_doc/add_null/commit/destroy |
-| 1.1.4 | `tantivy_ffi/src/reader.rs` | TantivyReader: open/query_match_any/all/phrase/phrase_prefix/regexp/bm25/destroy |
-| 1.1.5 | `tantivy_ffi/src/tokenizer.rs` | register_tokenizers() + tantivy_tokenize() |
-| 1.1.6 | `tantivy_ffi/cbindgen.toml` | cbindgen 配置 |
-| 1.1.7 | 生成 `tantivy_ffi.h` | `cbindgen --config cbindgen.toml --output tantivy_ffi.h` |
+
+| 步骤    | 文件                             | 内容                                                                               |
+| ----- | ------------------------------ | -------------------------------------------------------------------------------- |
+| 1.1.1 | `tantivy_ffi/Cargo.toml`       | 新建 Rust 项目，依赖 tantivy=0.22, tantivy-jieba=0.10                                   |
+| 1.1.2 | `tantivy_ffi/src/lib.rs`       | `extern "C"` 入口，re-export writer/reader/tokenizer                                |
+| 1.1.3 | `tantivy_ffi/src/writer.rs`    | TantivyWriter: create/add_doc/add_null/commit/destroy                            |
+| 1.1.4 | `tantivy_ffi/src/reader.rs`    | TantivyReader: open/query_match_any/all/phrase/phrase_prefix/regexp/bm25/destroy |
+| 1.1.5 | `tantivy_ffi/src/tokenizer.rs` | register_tokenizers() + tantivy_tokenize()                                       |
+| 1.1.6 | `tantivy_ffi/cbindgen.toml`    | cbindgen 配置                                                                      |
+| 1.1.7 | 生成 `tantivy_ffi.h`             | `cbindgen --config cbindgen.toml --output tantivy_ffi.h`                         |
+
 
 ### 1.2 单元测试
 
 Rust 侧 `#[test]`：
+
 ```rust
 #[test]
 fn test_write_and_query() {
@@ -190,14 +193,16 @@ $SSH "docker exec sr-dev bash -c 'source \$HOME/.cargo/env && cd /build/be/src/s
 
 ### 2.2 代码任务
 
-| 步骤 | 文件 | 内容 |
-|------|------|------|
-| 2.2.1 | `inverted_index_common.h` | `InvertedImplementType::TANTIVY=3`, `MATCH_PHRASE_PREFIX_QUERY=10`, `MATCH_REGEXP_QUERY=11` |
-| 2.2.2 | `tantivy/tantivy_plugin.h/.cpp` | 实现 `InvertedPlugin`，注册到 factory |
-| 2.2.3 | `tantivy/tantivy_inverted_writer.h/.cpp` | 实现 `InvertedWriter`: init/add_values/add_nulls/finish，调用 FFI |
-| 2.2.4 | `tantivy/tantivy_inverted_reader.h/.cpp` | 实现 `InvertedReader`: load/query → roaring::Roaring，新增 `query_with_score()` |
-| 2.2.5 | `inverted_plugin_factory.cpp` | `case TANTIVY: return TantivyPlugin` |
-| 2.2.6 | `segment_iterator.cpp` | `_apply_inverted_index()` 中处理 MATCH_PHRASE_PREFIX_QUERY, MATCH_REGEXP_QUERY |
+
+| 步骤    | 文件                                       | 内容                                                                                          |
+| ----- | ---------------------------------------- | ------------------------------------------------------------------------------------------- |
+| 2.2.1 | `inverted_index_common.h`                | `InvertedImplementType::TANTIVY=3`, `MATCH_PHRASE_PREFIX_QUERY=10`, `MATCH_REGEXP_QUERY=11` |
+| 2.2.2 | `tantivy/tantivy_plugin.h/.cpp`          | 实现 `InvertedPlugin`，注册到 factory                                                             |
+| 2.2.3 | `tantivy/tantivy_inverted_writer.h/.cpp` | 实现 `InvertedWriter`: init/add_values/add_nulls/finish，调用 FFI                                |
+| 2.2.4 | `tantivy/tantivy_inverted_reader.h/.cpp` | 实现 `InvertedReader`: load/query → roaring::Roaring，新增 `query_with_score()`                  |
+| 2.2.5 | `inverted_plugin_factory.cpp`            | `case TANTIVY: return TantivyPlugin`                                                        |
+| 2.2.6 | `segment_iterator.cpp`                   | `_apply_inverted_index()` 中处理 MATCH_PHRASE_PREFIX_QUERY, MATCH_REGEXP_QUERY                 |
+
 
 ### 2.3 单元测试
 
@@ -244,18 +249,20 @@ $SSH "docker exec sr-dev bash -c 'cd /build && ./build.sh --be 2>&1 | tail -20'"
 
 ### 3.2 代码任务
 
-| 步骤 | 文件 | 内容 |
-|------|------|------|
-| 3.2.1 | `MatchExpr.java` | `MatchOperator` 新增 `MATCH_PHRASE`, `MATCH_PHRASE_PREFIX`, `MATCH_REGEXP` |
-| 3.2.2 | `StarRocks.g4` / `StarRocksLex.g4` | 新增关键字 + 语法规则 |
-| 3.2.3 | `AstBuilder.java` | 解析新 MATCH 语法，生成 MatchExpr |
-| 3.2.4 | `AstBuilder.java` | `text_match`/`text_match_all`/`text_match_phrase` 函数 alias → MatchExpr |
-| 3.2.5 | `ExprOpcodeRegistry.java` | MATCH_PHRASE→TExprOpcode.MATCH_PHRASE 等映射 |
-| 3.2.6 | `Exprs.thrift` | TExprOpcode 新增 MATCH_PHRASE, MATCH_PHRASE_PREFIX, MATCH_REGEXP |
-| 3.2.7 | `IndexAnalyzer.java` | `imp_lib=tantivy` 合法性校验 |
-| 3.2.8 | `InvertedIndexParams.java` | `InvertedIndexImpType.TANTIVY` 枚举 |
-| 3.2.9 | `Config.java` | `enable_experimental_tantivy`（默认 false） |
-| 3.2.10 | BE: `segment_iterator.cpp` | TExprOpcode → InvertedIndexQueryType 映射 |
+
+| 步骤     | 文件                                 | 内容                                                                       |
+| ------ | ---------------------------------- | ------------------------------------------------------------------------ |
+| 3.2.1  | `MatchExpr.java`                   | `MatchOperator` 新增 `MATCH_PHRASE`, `MATCH_PHRASE_PREFIX`, `MATCH_REGEXP` |
+| 3.2.2  | `StarRocks.g4` / `StarRocksLex.g4` | 新增关键字 + 语法规则                                                             |
+| 3.2.3  | `AstBuilder.java`                  | 解析新 MATCH 语法，生成 MatchExpr                                                |
+| 3.2.4  | `AstBuilder.java`                  | `text_match`/`text_match_all`/`text_match_phrase` 函数 alias → MatchExpr   |
+| 3.2.5  | `ExprOpcodeRegistry.java`          | MATCH_PHRASE→TExprOpcode.MATCH_PHRASE 等映射                                |
+| 3.2.6  | `Exprs.thrift`                     | TExprOpcode 新增 MATCH_PHRASE, MATCH_PHRASE_PREFIX, MATCH_REGEXP           |
+| 3.2.7  | `IndexAnalyzer.java`               | `imp_lib=tantivy` 合法性校验                                                  |
+| 3.2.8  | `InvertedIndexParams.java`         | `InvertedIndexImpType.TANTIVY` 枚举                                        |
+| 3.2.9  | `Config.java`                      | `enable_experimental_tantivy`（默认 false）                                  |
+| 3.2.10 | BE: `segment_iterator.cpp`         | TExprOpcode → InvertedIndexQueryType 映射                                  |
+
 
 ### 3.3 E2E 验证
 
@@ -343,13 +350,15 @@ $SSH "docker exec sr-dev bash -c 'mysql -h127.0.0.1 -P9030 -uroot -e \"
 
 ### 4.2 代码任务
 
-| 步骤 | 文件 | 内容 |
-|------|------|------|
-| 4.2.1 | `FunctionSet.java` (FE) | 注册 `TOKENIZE(VARCHAR, VARCHAR) → ARRAY<VARCHAR>` |
-| 4.2.2 | `tokenize_function.h/.cpp` (BE) | TOKENIZE 标量函数，调用 `tantivy_tokenize()` FFI |
-| 4.2.3 | `FunctionSet.java` (FE) | 注册 `BM25(VARCHAR, VARCHAR) → DOUBLE` |
-| 4.2.4 | Analyzer (FE) | BM25 校验: 同一查询块中必须有 MATCH 谓词 |
-| 4.2.5 | `bm25_function.h/.cpp` (BE) | BM25 标量函数，调用 `tantivy_query_bm25()` FFI |
+
+| 步骤    | 文件                              | 内容                                               |
+| ----- | ------------------------------- | ------------------------------------------------ |
+| 4.2.1 | `FunctionSet.java` (FE)         | 注册 `TOKENIZE(VARCHAR, VARCHAR) → ARRAY<VARCHAR>` |
+| 4.2.2 | `tokenize_function.h/.cpp` (BE) | TOKENIZE 标量函数，调用 `tantivy_tokenize()` FFI        |
+| 4.2.3 | `FunctionSet.java` (FE)         | 注册 `BM25(VARCHAR, VARCHAR) → DOUBLE`             |
+| 4.2.4 | Analyzer (FE)                   | BM25 校验: 同一查询块中必须有 MATCH 谓词                      |
+| 4.2.5 | `bm25_function.h/.cpp` (BE)     | BM25 标量函数，调用 `tantivy_query_bm25()` FFI          |
+
 
 ### 4.3 E2E 验证
 
@@ -406,11 +415,13 @@ DROP TABLE test_bm25;
 
 ### 5.1 代码任务
 
-| 步骤 | 文件 | 内容 |
-|------|------|------|
-| 5.1.1 | `tantivy_ffi/src/tokenizer.rs` | 确保 jieba 分词器注册 + 中文 E2E |
-| 5.1.2 | `tantivy/tantivy_inverted_writer.cpp` | Compaction 时调用 `IndexWriter::merge()` |
-| 5.1.3 | `segment_iterator.cpp` | Profile 计数器: TantivyQueryTime, TantivyQueryRows |
+
+| 步骤    | 文件                                    | 内容                                              |
+| ----- | ------------------------------------- | ----------------------------------------------- |
+| 5.1.1 | `tantivy_ffi/src/tokenizer.rs`        | 确保 jieba 分词器注册 + 中文 E2E                         |
+| 5.1.2 | `tantivy/tantivy_inverted_writer.cpp` | Compaction 时调用 `IndexWriter::merge()`           |
+| 5.1.3 | `segment_iterator.cpp`                | Profile 计数器: TantivyQueryTime, TantivyQueryRows |
+
 
 ### 5.2 E2E 验证
 
@@ -505,12 +516,14 @@ CREATE TABLE bench_noidx (
 
 ### 6.2 关注指标
 
-| 指标 | 说明 |
-|------|------|
-| 索引写入时间 | INSERT 耗时 |
-| 索引文件大小 | 磁盘占用 |
+
+| 指标             | 说明         |
+| -------------- | ---------- |
+| 索引写入时间         | INSERT 耗时  |
+| 索引文件大小         | 磁盘占用       |
 | 查询延迟 (P50/P99) | 各 query 类型 |
-| BM25 评分延迟 | tantivy 独有 |
+| BM25 评分延迟      | tantivy 独有 |
+
 
 ### 6.3 验证标准
 
@@ -523,12 +536,15 @@ CREATE TABLE bench_noidx (
 
 ## 实施状态
 
-| Phase | 内容 | 状态 | 日期 |
-|-------|------|------|------|
-| Phase 0 | 环境准备（Rust 工具链 + CMake 集成） | Pending | - |
-| Phase 1 | Tantivy FFI 基础设施 | Pending | - |
-| Phase 2 | BE 存储引擎集成 | Pending | - |
-| Phase 3 | FE 语法 + 全链路打通 | Pending | - |
-| Phase 4 | TOKENIZE + BM25 函数 | Pending | - |
-| Phase 5 | 中文分词 + Compaction + Profile | Pending | - |
-| Phase 6 | 性能 Benchmark | Pending | - |
+
+| Phase   | 内容                          | 状态      | 日期  |
+| ------- | --------------------------- | ------- | --- |
+| Phase 0 | 环境准备（Rust 工具链 + CMake 集成）   | Pending | -   |
+| Phase 1 | Tantivy FFI 基础设施            | Pending | -   |
+| Phase 2 | BE 存储引擎集成                   | Pending | -   |
+| Phase 3 | FE 语法 + 全链路打通               | Pending | -   |
+| Phase 4 | TOKENIZE + BM25 函数          | Pending | -   |
+| Phase 5 | 中文分词 + Compaction + Profile | Pending | -   |
+| Phase 6 | 性能 Benchmark                | Pending | -   |
+
+

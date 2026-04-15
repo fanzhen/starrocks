@@ -1,0 +1,431 @@
+use std::path::Path;
+use tantivy::collector::{DocSetCollector, TopDocs};
+use tantivy::query::{
+    BooleanQuery, Occur, PhrasePrefixQuery, PhraseQuery, RegexQuery,
+    TermQuery,
+};
+use tantivy::schema::{IndexRecordOption, Value};
+use tantivy::{DocAddress, Index, IndexReader, ReloadPolicy, Term};
+
+use crate::tokenizer::create_tokenizer_manager;
+
+/// Default upper bound for BM25 "unlimited" queries to prevent OOM.
+const BM25_MAX_LIMIT: usize = 10_000;
+
+/// Opaque reader handle exposed via FFI.
+pub struct TantivyReaderInner {
+    index: Index,
+    reader: IndexReader,
+}
+
+/// Result of a bitmap query: a sorted vec of matching row_ids.
+pub struct TantivyBitmapInner {
+    pub row_ids: Vec<u32>,
+}
+
+/// Result of a BM25 scored query: vec of (row_id, score) pairs.
+pub struct TantivyScoreResultInner {
+    pub entries: Vec<(u32, f32)>,
+}
+
+impl TantivyReaderInner {
+    pub fn open(index_dir: &str) -> Result<Self, String> {
+        let dir_path = Path::new(index_dir);
+        let mmap_dir = tantivy::directory::MmapDirectory::open(dir_path)
+            .map_err(|e| format!("Failed to open MmapDirectory: {}", e))?;
+
+        let index = Index::open(mmap_dir)
+            .map_err(|e| format!("Failed to open index: {}", e))?;
+
+        // Register tokenizers
+        let tokenizer_manager = create_tokenizer_manager();
+        for name in &["none", "standard", "english", "chinese"] {
+            if let Some(tok) = tokenizer_manager.get(name) {
+                index.tokenizers().register(name, tok);
+            }
+        }
+
+        let reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::Manual)
+            .try_into()
+            .map_err(|e| format!("Failed to create reader: {}", e))?;
+
+        Ok(Self { index, reader })
+    }
+
+    /// Tokenize the query text using the field's configured tokenizer.
+    fn tokenize_query(&self, field_name: &str, query_text: &str) -> Result<Vec<String>, String> {
+        let schema = self.index.schema();
+        let field = schema
+            .get_field(field_name)
+            .map_err(|_| format!("Field not found: {}", field_name))?;
+
+        let field_entry = schema.get_field_entry(field);
+        let tokenizer_name = match field_entry.field_type() {
+            tantivy::schema::FieldType::Str(ref text_options) => text_options
+                .get_indexing_options()
+                .map(|opts| opts.tokenizer())
+                .unwrap_or("standard"),
+            _ => "standard",
+        };
+
+        let mut tokenizer = self
+            .index
+            .tokenizers()
+            .get(tokenizer_name)
+            .ok_or_else(|| format!("Tokenizer not found: {}", tokenizer_name))?;
+
+        let mut token_stream = tokenizer.token_stream(query_text);
+        let mut tokens = Vec::new();
+        while token_stream.advance() {
+            tokens.push(token_stream.token().text.clone());
+        }
+        Ok(tokens)
+    }
+
+    /// Extract row_id from a doc address.
+    fn get_row_id(&self, doc_addr: DocAddress) -> Result<Option<u32>, String> {
+        let searcher = self.reader.searcher();
+        let schema = self.index.schema();
+        let row_id_field = schema
+            .get_field("_row_id")
+            .map_err(|_| "Row ID field not found".to_string())?;
+
+        let doc: tantivy::TantivyDocument = searcher
+            .doc(doc_addr)
+            .map_err(|e| format!("Failed to retrieve doc: {}", e))?;
+
+        Ok(doc.get_first(row_id_field).and_then(|v| v.as_u64()).map(|r| r as u32))
+    }
+
+    /// Collect all matching row_ids using DocSetCollector (no scoring, no heap).
+    fn collect_row_ids(
+        &self,
+        query: Box<dyn tantivy::query::Query>,
+    ) -> Result<Vec<u32>, String> {
+        let searcher = self.reader.searcher();
+
+        let doc_set = searcher
+            .search(&query, &DocSetCollector)
+            .map_err(|e| format!("Search failed: {}", e))?;
+
+        let mut row_ids = Vec::with_capacity(doc_set.len());
+        for doc_addr in doc_set {
+            if let Some(rid) = self.get_row_id(doc_addr)? {
+                row_ids.push(rid);
+            }
+        }
+        row_ids.sort_unstable();
+        Ok(row_ids)
+    }
+
+    /// MATCH_ANY: any token matches (OR semantics).
+    pub fn query_match_any(&self, field_name: &str, query_text: &str) -> Result<Vec<u32>, String> {
+        let schema = self.index.schema();
+        let field = schema
+            .get_field(field_name)
+            .map_err(|_| format!("Field not found: {}", field_name))?;
+
+        let tokens = self.tokenize_query(field_name, query_text)?;
+        if tokens.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let subqueries: Vec<(Occur, Box<dyn tantivy::query::Query>)> = tokens
+            .into_iter()
+            .map(|t| {
+                let term = Term::from_field_text(field, &t);
+                let q: Box<dyn tantivy::query::Query> =
+                    Box::new(TermQuery::new(term, IndexRecordOption::WithFreqs));
+                (Occur::Should, q)
+            })
+            .collect();
+
+        let query = BooleanQuery::new(subqueries);
+        self.collect_row_ids(Box::new(query))
+    }
+
+    /// MATCH_ALL: all tokens must match (AND semantics).
+    pub fn query_match_all(&self, field_name: &str, query_text: &str) -> Result<Vec<u32>, String> {
+        let schema = self.index.schema();
+        let field = schema
+            .get_field(field_name)
+            .map_err(|_| format!("Field not found: {}", field_name))?;
+
+        let tokens = self.tokenize_query(field_name, query_text)?;
+        if tokens.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let subqueries: Vec<(Occur, Box<dyn tantivy::query::Query>)> = tokens
+            .into_iter()
+            .map(|t| {
+                let term = Term::from_field_text(field, &t);
+                let q: Box<dyn tantivy::query::Query> =
+                    Box::new(TermQuery::new(term, IndexRecordOption::WithFreqs));
+                (Occur::Must, q)
+            })
+            .collect();
+
+        let query = BooleanQuery::new(subqueries);
+        self.collect_row_ids(Box::new(query))
+    }
+
+    /// MATCH_PHRASE: tokens must appear in order and adjacent.
+    pub fn query_phrase(&self, field_name: &str, query_text: &str) -> Result<Vec<u32>, String> {
+        let schema = self.index.schema();
+        let field = schema
+            .get_field(field_name)
+            .map_err(|_| format!("Field not found: {}", field_name))?;
+
+        let tokens = self.tokenize_query(field_name, query_text)?;
+        if tokens.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let terms: Vec<Term> = tokens
+            .iter()
+            .map(|t| Term::from_field_text(field, t))
+            .collect();
+
+        let query = PhraseQuery::new(terms);
+        self.collect_row_ids(Box::new(query))
+    }
+
+    /// MATCH_PHRASE_PREFIX: phrase match with the last token as prefix.
+    pub fn query_phrase_prefix(
+        &self,
+        field_name: &str,
+        query_text: &str,
+    ) -> Result<Vec<u32>, String> {
+        let schema = self.index.schema();
+        let field = schema
+            .get_field(field_name)
+            .map_err(|_| format!("Field not found: {}", field_name))?;
+
+        let tokens = self.tokenize_query(field_name, query_text)?;
+        if tokens.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let terms: Vec<Term> = tokens
+            .iter()
+            .map(|t| Term::from_field_text(field, t))
+            .collect();
+
+        let query = PhrasePrefixQuery::new(terms);
+        self.collect_row_ids(Box::new(query))
+    }
+
+    /// MATCH_REGEXP: regex match against index terms.
+    pub fn query_regexp(&self, field_name: &str, pattern: &str) -> Result<Vec<u32>, String> {
+        let schema = self.index.schema();
+        let field = schema
+            .get_field(field_name)
+            .map_err(|_| format!("Field not found: {}", field_name))?;
+
+        let query = RegexQuery::from_pattern(pattern, field)
+            .map_err(|e| format!("Invalid regex pattern: {}", e))?;
+
+        self.collect_row_ids(Box::new(query))
+    }
+
+    /// BM25 scoring query. Returns (row_id, score) pairs sorted by score descending.
+    /// query_type: 0=any(OR), 1=all(AND), 2=phrase
+    /// limit: max results, 0=use default limit (10000)
+    pub fn query_bm25(
+        &self,
+        field_name: &str,
+        query_text: &str,
+        query_type: i32,
+        limit: i32,
+    ) -> Result<Vec<(u32, f32)>, String> {
+        let schema = self.index.schema();
+        let field = schema
+            .get_field(field_name)
+            .map_err(|_| format!("Field not found: {}", field_name))?;
+
+        let tokens = self.tokenize_query(field_name, query_text)?;
+        if tokens.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let query: Box<dyn tantivy::query::Query> = match query_type {
+            0 => {
+                // OR (any)
+                let subqueries: Vec<(Occur, Box<dyn tantivy::query::Query>)> = tokens
+                    .into_iter()
+                    .map(|t| {
+                        let term = Term::from_field_text(field, &t);
+                        let q: Box<dyn tantivy::query::Query> =
+                            Box::new(TermQuery::new(term, IndexRecordOption::WithFreqs));
+                        (Occur::Should, q)
+                    })
+                    .collect();
+                Box::new(BooleanQuery::new(subqueries))
+            }
+            1 => {
+                // AND (all)
+                let subqueries: Vec<(Occur, Box<dyn tantivy::query::Query>)> = tokens
+                    .into_iter()
+                    .map(|t| {
+                        let term = Term::from_field_text(field, &t);
+                        let q: Box<dyn tantivy::query::Query> =
+                            Box::new(TermQuery::new(term, IndexRecordOption::WithFreqs));
+                        (Occur::Must, q)
+                    })
+                    .collect();
+                Box::new(BooleanQuery::new(subqueries))
+            }
+            2 => {
+                // Phrase
+                let terms: Vec<Term> = tokens
+                    .iter()
+                    .map(|t| Term::from_field_text(field, t))
+                    .collect();
+                Box::new(PhraseQuery::new(terms))
+            }
+            _ => return Err(format!("Invalid query_type: {}", query_type)),
+        };
+
+        let actual_limit = if limit <= 0 {
+            BM25_MAX_LIMIT
+        } else {
+            limit as usize
+        };
+
+        let searcher = self.reader.searcher();
+        let top_docs = searcher
+            .search(&query, &TopDocs::with_limit(actual_limit))
+            .map_err(|e| format!("BM25 search failed: {}", e))?;
+
+        let mut results = Vec::with_capacity(top_docs.len());
+        for (score, doc_addr) in top_docs {
+            if let Some(rid) = self.get_row_id(doc_addr)? {
+                results.push((rid, score));
+            }
+        }
+        Ok(results)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::writer::TantivyWriterInner;
+
+    fn create_test_index(dir: &str) {
+        let mut writer = TantivyWriterInner::create(dir, "content", "standard").unwrap();
+        writer
+            .add_doc("StarRocks is a high-performance analytical database", 0)
+            .unwrap();
+        writer
+            .add_doc("Full text search enables users to find relevant documents", 1)
+            .unwrap();
+        writer
+            .add_doc("Optimizing database performance requires careful analysis", 2)
+            .unwrap();
+        writer
+            .add_doc("Real-time analytics engine for modern data applications", 3)
+            .unwrap();
+        writer
+            .add_doc("Search engine design involves inverted index and ranking", 4)
+            .unwrap();
+        writer.commit().unwrap();
+    }
+
+    #[test]
+    fn test_match_any() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path().to_str().unwrap();
+        create_test_index(dir_path);
+
+        let reader = TantivyReaderInner::open(dir_path).unwrap();
+        let results = reader.query_match_any("content", "database performance").unwrap();
+        // "database" in doc 0, 2; "performance" in doc 0, 2 → union = {0, 2}
+        assert!(results.contains(&0));
+        assert!(results.contains(&2));
+    }
+
+    #[test]
+    fn test_match_all() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path().to_str().unwrap();
+        create_test_index(dir_path);
+
+        let reader = TantivyReaderInner::open(dir_path).unwrap();
+        let results = reader.query_match_all("content", "database performance").unwrap();
+        // Both "database" AND "performance" must be present
+        assert!(results.contains(&2));
+    }
+
+    #[test]
+    fn test_phrase() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path().to_str().unwrap();
+        create_test_index(dir_path);
+
+        let reader = TantivyReaderInner::open(dir_path).unwrap();
+        let results = reader.query_phrase("content", "text search").unwrap();
+        // "text search" as adjacent tokens → doc 1 ("full text search")
+        assert!(results.contains(&1));
+        assert!(!results.contains(&4));
+    }
+
+    #[test]
+    fn test_phrase_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path().to_str().unwrap();
+        create_test_index(dir_path);
+
+        let reader = TantivyReaderInner::open(dir_path).unwrap();
+        let results = reader.query_phrase_prefix("content", "search eng").unwrap();
+        // "search" + prefix "eng" → matches "search engine" in doc 4
+        assert!(results.contains(&4));
+    }
+
+    #[test]
+    fn test_regexp() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path().to_str().unwrap();
+        create_test_index(dir_path);
+
+        let reader = TantivyReaderInner::open(dir_path).unwrap();
+        let results = reader.query_regexp("content", "data.*").unwrap();
+        // Terms starting with "data": "database" (docs 0,2), "data" (doc 3)
+        assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn test_bm25() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path().to_str().unwrap();
+        create_test_index(dir_path);
+
+        let reader = TantivyReaderInner::open(dir_path).unwrap();
+        let results = reader.query_bm25("content", "database", 0, 10).unwrap();
+        assert!(!results.is_empty());
+        // All scores should be > 0
+        for (_rid, score) in &results {
+            assert!(*score > 0.0);
+        }
+        // Results should be sorted by score descending
+        for i in 1..results.len() {
+            assert!(results[i - 1].1 >= results[i].1);
+        }
+    }
+
+    #[test]
+    fn test_bm25_default_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path().to_str().unwrap();
+        create_test_index(dir_path);
+
+        let reader = TantivyReaderInner::open(dir_path).unwrap();
+        // limit=0 should use BM25_MAX_LIMIT (10000), not u32::MAX
+        let results = reader.query_bm25("content", "database", 0, 0).unwrap();
+        assert!(!results.is_empty());
+        assert!(results.len() <= BM25_MAX_LIMIT);
+    }
+}

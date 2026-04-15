@@ -1,0 +1,14 @@
+language = "C"
+include_guard = "TANTIVY_FFI_H"
+
+[export]
+include = []
+exclude = []
+
+[export.rename]
+
+[fn]
+prefix = ""
+
+[enum]
+rename_variants = "None"

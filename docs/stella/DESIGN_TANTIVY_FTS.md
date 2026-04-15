@@ -181,6 +181,10 @@ SELECT TOKENIZE('hello world', 'standard');
 
 CLucene 的问题不是"不能用"，而是"做 BM25 太痛苦"。Tantivy 的 BM25 是 first-class feature，这是选择它的核心原因。
 
+> 注：BM25 公式本身并不复杂，难点在于把 BM25 作为查询引擎的一等能力稳定落地。  
+> 需要在倒排执行链路中高效获取并维护 `tf/df/doc_len/avgdl/N` 等统计信息，和分词器行为严格对齐，并与 `MATCH_*` 谓词、TopK 排序、segment 级合并、性能与可观测性协同工作。  
+> Tantivy 在这些能力上原生支持更完整，因此工程实现成本和维护风险显著低于在 CLucene 路径上继续扩展。
+
 ---
 
 ## 4. 整体架构
