@@ -26,6 +26,8 @@ StatusOr<InvertedImplementType> get_inverted_imp_type(const TabletIndex& tablet_
             return InvertedImplementType::CLUCENE;
         } else if (boost::algorithm::to_lower_copy(imp_type) == TYPE_BUILTIN) {
             return InvertedImplementType::BUILTIN;
+        } else if (boost::algorithm::to_lower_copy(imp_type) == TYPE_TANTIVY) {
+            return InvertedImplementType::TANTIVY;
         } else {
             return Status::InvalidArgument("Do not support imp_type : " + imp_type);
         }

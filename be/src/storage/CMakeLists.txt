@@ -299,6 +299,9 @@ set(STORAGE_FILES
     index/vector/tenann/tenann_index_builder.cpp
     index/vector/tenann/tenann_index_utils.cpp
     lake/table_schema_service.cpp
+    index/inverted/tantivy/tantivy_plugin.cpp
+    index/inverted/tantivy/tantivy_inverted_writer.cpp
+    index/inverted/tantivy/tantivy_inverted_reader.cpp
     index/inverted/builtin/builtin_plugin.cpp
     index/inverted/builtin/builtin_inverted_writer.cpp
     index/inverted/builtin/builtin_inverted_reader.cpp

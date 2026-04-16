@@ -165,6 +165,15 @@ where
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn tantivy_query_term(
+    r: *mut TantivyReader,
+    field: *const c_char,
+    query: *const c_char,
+) -> *mut TantivyBitmap {
+    do_query(r, field, query, |inner, f, q| inner.query_term(f, q))
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn tantivy_query_match_any(
     r: *mut TantivyReader,
     field: *const c_char,

@@ -6,6 +6,10 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * Opaque bitmap handle (query result).
  */
@@ -49,6 +53,10 @@ void tantivy_writer_destroy(struct TantivyWriter *w);
 struct TantivyReader *tantivy_reader_open(const char *index_dir);
 
 void tantivy_reader_destroy(struct TantivyReader *r);
+
+struct TantivyBitmap *tantivy_query_term(struct TantivyReader *r,
+                                         const char *field,
+                                         const char *query);
 
 struct TantivyBitmap *tantivy_query_match_any(struct TantivyReader *r,
                                               const char *field,
@@ -101,5 +109,9 @@ uint32_t tantivy_tokens_count(const struct TantivyTokens *t);
 const char *tantivy_tokens_get(const struct TantivyTokens *t, uint32_t idx);
 
 void tantivy_tokens_destroy(struct TantivyTokens *t);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif  /* TANTIVY_FFI_H */

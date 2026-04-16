@@ -17,6 +17,7 @@
 #include "common/statusor.h"
 #include "storage/index/inverted/clucene/clucene_plugin.h"
 #include "storage/index/inverted/inverted_plugin.h"
+#include "storage/index/inverted/tantivy/tantivy_plugin.h"
 
 namespace starrocks {
 class InvertedPluginFactory {

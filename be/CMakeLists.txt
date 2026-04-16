@@ -594,6 +594,32 @@ if (STARROCKS_JIT_ENABLE)
     )
 endif()
 
+# Build Tantivy FFI static library via Cargo
+find_program(CARGO_EXECUTABLE cargo REQUIRED)
+set(TANTIVY_FFI_DIR "${CMAKE_SOURCE_DIR}/src/storage/index/inverted/tantivy_ffi")
+string(TOUPPER "${CMAKE_BUILD_TYPE}" _TANTIVY_BUILD_TYPE_UPPER)
+if ("${_TANTIVY_BUILD_TYPE_UPPER}" STREQUAL "DEBUG" OR "${_TANTIVY_BUILD_TYPE_UPPER}" STREQUAL "ASAN")
+    set(TANTIVY_CARGO_FLAGS "")
+    set(TANTIVY_FFI_LIB "${TANTIVY_FFI_DIR}/target/debug/libtantivy_ffi.a")
+else()
+    set(TANTIVY_CARGO_FLAGS "--release")
+    set(TANTIVY_FFI_LIB "${TANTIVY_FFI_DIR}/target/release/libtantivy_ffi.a")
+endif()
+
+file(GLOB_RECURSE TANTIVY_FFI_SOURCES "${TANTIVY_FFI_DIR}/src/*.rs")
+add_custom_command(
+    OUTPUT ${TANTIVY_FFI_LIB}
+    COMMAND ${CARGO_EXECUTABLE} build ${TANTIVY_CARGO_FLAGS}
+    WORKING_DIRECTORY ${TANTIVY_FFI_DIR}
+    DEPENDS ${TANTIVY_FFI_DIR}/Cargo.toml ${TANTIVY_FFI_DIR}/Cargo.lock ${TANTIVY_FFI_SOURCES}
+    COMMENT "Building tantivy FFI library (${CMAKE_BUILD_TYPE})"
+)
+add_custom_target(tantivy_ffi_build DEPENDS ${TANTIVY_FFI_LIB})
+
+add_library(tantivy_ffi STATIC IMPORTED GLOBAL)
+set_target_properties(tantivy_ffi PROPERTIES IMPORTED_LOCATION ${TANTIVY_FFI_LIB})
+add_dependencies(tantivy_ffi tantivy_ffi_build)
+
 # Set thirdparty libraries
 set(STARROCKS_DEPENDENCIES
     ${STARROCKS_DEPENDENCIES}
@@ -602,6 +628,9 @@ set(STARROCKS_DEPENDENCIES
     clucene-core
     clucene-shared
     clucene-contribs-lib
+    tantivy_ffi
+    dl
+    pthread
     rocksdb
     libs2
     snappy

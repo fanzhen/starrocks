@@ -120,6 +120,38 @@ impl TantivyReaderInner {
         Ok(row_ids)
     }
 
+    /// EQUAL_QUERY: exact term match without tokenization.
+    /// Case handling follows the field's tokenizer: tokenizers that lowercase
+    /// (standard, english, chinese) get lowercased input; parser=none preserves
+    /// original case to match the indexed terms exactly.
+    pub fn query_term(&self, field_name: &str, query_text: &str) -> Result<Vec<u32>, String> {
+        let schema = self.index.schema();
+        let field = schema
+            .get_field(field_name)
+            .map_err(|_| format!("Field not found: {}", field_name))?;
+
+        let field_entry = schema.get_field_entry(field);
+        let tokenizer_name = match field_entry.field_type() {
+            tantivy::schema::FieldType::Str(ref text_options) => text_options
+                .get_indexing_options()
+                .map(|opts| opts.tokenizer())
+                .unwrap_or("standard"),
+            _ => "standard",
+        };
+
+        // parser=none indexes terms as-is (case-preserved), so query must also preserve case.
+        // All other tokenizers (standard, english, chinese) lowercase during indexing.
+        let term_text = if tokenizer_name == "none" {
+            query_text.to_string()
+        } else {
+            query_text.to_lowercase()
+        };
+
+        let term = Term::from_field_text(field, &term_text);
+        let query = TermQuery::new(term, IndexRecordOption::WithFreqs);
+        self.collect_row_ids(Box::new(query))
+    }
+
     /// MATCH_ANY: any token matches (OR semantics).
     pub fn query_match_any(&self, field_name: &str, query_text: &str) -> Result<Vec<u32>, String> {
         let schema = self.index.schema();
@@ -414,6 +446,55 @@ mod tests {
         for i in 1..results.len() {
             assert!(results[i - 1].1 >= results[i].1);
         }
+    }
+
+    #[test]
+    fn test_term_query_standard() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path().to_str().unwrap();
+        create_test_index(dir_path); // uses "standard" tokenizer
+
+        let reader = TantivyReaderInner::open(dir_path).unwrap();
+
+        // "database" matches docs 0 and 2
+        let results = reader.query_term("content", "database").unwrap();
+        assert!(results.contains(&0));
+        assert!(results.contains(&2));
+
+        // "Database" (uppercase) should also match because standard tokenizer lowercases
+        let results_upper = reader.query_term("content", "Database").unwrap();
+        assert_eq!(results, results_upper);
+
+        // multi-word "database performance" is treated as one term, no match
+        let results_multi = reader.query_term("content", "database performance").unwrap();
+        assert!(results_multi.is_empty());
+    }
+
+    #[test]
+    fn test_term_query_none_case_sensitive() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path().to_str().unwrap();
+
+        // Create index with parser=none (case-preserving, no tokenization)
+        let mut writer = TantivyWriterInner::create(dir_path, "content", "none").unwrap();
+        writer.add_doc("Hello", 0).unwrap();
+        writer.add_doc("hello", 1).unwrap();
+        writer.add_doc("HELLO", 2).unwrap();
+        writer.commit().unwrap();
+
+        let reader = TantivyReaderInner::open(dir_path).unwrap();
+
+        // parser=none: "Hello" matches only doc 0 (exact case)
+        let results = reader.query_term("content", "Hello").unwrap();
+        assert_eq!(results, vec![0]);
+
+        // "hello" matches only doc 1
+        let results = reader.query_term("content", "hello").unwrap();
+        assert_eq!(results, vec![1]);
+
+        // "HELLO" matches only doc 2
+        let results = reader.query_term("content", "HELLO").unwrap();
+        assert_eq!(results, vec![2]);
     }
 
     #[test]

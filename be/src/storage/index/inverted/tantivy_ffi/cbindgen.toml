@@ -1,5 +1,6 @@
 language = "C"
 include_guard = "TANTIVY_FFI_H"
+cpp_compat = true
 
 [export]
 include = []
