@@ -32,6 +32,7 @@ public class InvertedIndexParams {
     public enum InvertedIndexImpType {
         CLUCENE,
         BUILTIN,
+        TANTIVY,
     }
 
     public enum CommonIndexParamKey implements ParamsKey {

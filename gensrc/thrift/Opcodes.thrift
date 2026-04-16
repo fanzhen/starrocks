@@ -89,7 +89,10 @@ enum TExprOpcode {
     JIT,
     MATCH,
     MATCH_ANY,
-    MATCH_ALL
+    MATCH_ALL,
+    MATCH_PHRASE,
+    MATCH_PHRASE_PREFIX,
+    MATCH_REGEXP
 }
 
 // Stream Operation Types

@@ -4,6 +4,7 @@ pub mod writer;
 
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
+use std::panic;
 
 // ========================== Opaque Types ==========================
 
@@ -141,7 +142,7 @@ pub unsafe extern "C" fn tantivy_reader_destroy(r: *mut TantivyReader) {
 
 unsafe fn do_query<F>(r: *mut TantivyReader, field: *const c_char, query: *const c_char, f: F) -> *mut TantivyBitmap
 where
-    F: FnOnce(&reader::TantivyReaderInner, &str, &str) -> Result<Vec<u32>, String>,
+    F: FnOnce(&reader::TantivyReaderInner, &str, &str) -> Result<Vec<u32>, String> + panic::UnwindSafe,
 {
     if r.is_null() {
         return std::ptr::null_mut();
@@ -156,11 +157,13 @@ where
     };
     let r = &*r;
 
-    match f(&r.inner, field, query) {
-        Ok(row_ids) => Box::into_raw(Box::new(TantivyBitmap {
+    // catch_unwind prevents Rust panics from unwinding across FFI boundary
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| f(&r.inner, field, query)));
+    match result {
+        Ok(Ok(row_ids)) => Box::into_raw(Box::new(TantivyBitmap {
             inner: reader::TantivyBitmapInner { row_ids },
         })),
-        Err(_) => std::ptr::null_mut(),
+        Ok(Err(_)) | Err(_) => std::ptr::null_mut(),
     }
 }
 

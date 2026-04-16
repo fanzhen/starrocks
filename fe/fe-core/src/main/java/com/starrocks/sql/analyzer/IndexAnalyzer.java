@@ -58,6 +58,7 @@ import static com.starrocks.common.InvertedIndexParams.IndexParamsKey.DICT_GRAM_
 import static com.starrocks.common.InvertedIndexParams.IndexParamsKey.PARSER;
 import static com.starrocks.common.InvertedIndexParams.InvertedIndexImpType.BUILTIN;
 import static com.starrocks.common.InvertedIndexParams.InvertedIndexImpType.CLUCENE;
+import static com.starrocks.common.InvertedIndexParams.InvertedIndexImpType.TANTIVY;
 
 /**
  * Analyzer for IndexDef validation and analysis.
@@ -174,12 +175,13 @@ public class IndexAnalyzer {
 
         if (properties.containsKey(INVERTED_INDEX_IMP_LIB_KEY)) {
             String impValue = properties.get(INVERTED_INDEX_IMP_LIB_KEY);
-            if (!(CLUCENE.name().equalsIgnoreCase(impValue) || BUILTIN.name().equalsIgnoreCase(impValue))) {
-                throw new SemanticException("Only support clucene or builtin implement for now");
+            if (!(CLUCENE.name().equalsIgnoreCase(impValue) || BUILTIN.name().equalsIgnoreCase(impValue)
+                    || TANTIVY.name().equalsIgnoreCase(impValue))) {
+                throw new SemanticException("Only support clucene, builtin or tantivy implement for now");
             }
 
             if (!BUILTIN.name().equalsIgnoreCase(impValue) && RunMode.isSharedDataMode()) {
-                throw new SemanticException("Clucene inverted index does not support shared data mode");
+                throw new SemanticException(impValue + " inverted index does not support shared data mode");
             }
         } else if (RunMode.isSharedDataMode()) {
             properties.put(INVERTED_INDEX_IMP_LIB_KEY, BUILTIN.name().toLowerCase(Locale.ROOT));

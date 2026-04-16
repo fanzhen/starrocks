@@ -8924,6 +8924,15 @@ public class AstBuilder extends com.starrocks.sql.parser.StarRocksBaseVisitor<Pa
             case "MATCH_ALL":
                 operator = MatchExpr.MatchOperator.MATCH_ALL;
                 break;
+            case "MATCH_PHRASE":
+                operator = MatchExpr.MatchOperator.MATCH_PHRASE;
+                break;
+            case "MATCH_PHRASE_PREFIX":
+                operator = MatchExpr.MatchOperator.MATCH_PHRASE_PREFIX;
+                break;
+            case "MATCH_REGEXP":
+                operator = MatchExpr.MatchOperator.MATCH_REGEXP;
+                break;
             default:
                 throw new SemanticException("Unknown match operator: " + matchOp);
         }

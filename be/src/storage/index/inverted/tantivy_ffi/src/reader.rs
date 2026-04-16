@@ -221,8 +221,14 @@ impl TantivyReaderInner {
             .map(|t| Term::from_field_text(field, t))
             .collect();
 
-        let query = PhraseQuery::new(terms);
-        self.collect_row_ids(Box::new(query))
+        // PhraseQuery requires >= 2 terms; for a single token, fall back to TermQuery.
+        if terms.len() == 1 {
+            let query = TermQuery::new(terms.into_iter().next().unwrap(), IndexRecordOption::WithFreqs);
+            self.collect_row_ids(Box::new(query))
+        } else {
+            let query = PhraseQuery::new(terms);
+            self.collect_row_ids(Box::new(query))
+        }
     }
 
     /// MATCH_PHRASE_PREFIX: phrase match with the last token as prefix.
@@ -246,8 +252,24 @@ impl TantivyReaderInner {
             .map(|t| Term::from_field_text(field, t))
             .collect();
 
-        let query = PhrasePrefixQuery::new(terms);
-        self.collect_row_ids(Box::new(query))
+        // PhrasePrefixQuery requires >= 2 terms; for a single token, use prefix-style RegexQuery.
+        if terms.len() == 1 {
+            // Escape regex special characters in the prefix token
+            let mut escaped = String::new();
+            for c in tokens[0].chars() {
+                if "\\.*+?()[]{}^$|".contains(c) {
+                    escaped.push('\\');
+                }
+                escaped.push(c);
+            }
+            let pattern = format!("{}.*", escaped);
+            let query = RegexQuery::from_pattern(&pattern, field)
+                .map_err(|e| format!("Prefix regex failed: {}", e))?;
+            self.collect_row_ids(Box::new(query))
+        } else {
+            let query = PhrasePrefixQuery::new(terms);
+            self.collect_row_ids(Box::new(query))
+        }
     }
 
     /// MATCH_REGEXP: regex match against index terms.
@@ -316,7 +338,11 @@ impl TantivyReaderInner {
                     .iter()
                     .map(|t| Term::from_field_text(field, t))
                     .collect();
-                Box::new(PhraseQuery::new(terms))
+                if terms.len() == 1 {
+                    Box::new(TermQuery::new(terms.into_iter().next().unwrap(), IndexRecordOption::WithFreqs))
+                } else {
+                    Box::new(PhraseQuery::new(terms))
+                }
             }
             _ => return Err(format!("Invalid query_type: {}", query_type)),
         };

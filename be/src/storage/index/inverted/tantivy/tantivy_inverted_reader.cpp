@@ -148,6 +148,8 @@ Status TantivyInvertedReader::query(OlapReaderStatistics* stats, const std::stri
     }
 
     if (result == nullptr) {
+        LOG(WARNING) << "Tantivy query returned null: path=" << _index_path << " query=" << query_str
+                     << " type=" << static_cast<int>(query_type);
         return Status::InternalError("Tantivy query returned null result");
     }
 
