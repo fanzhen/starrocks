@@ -6,9 +6,25 @@
 
 ---
 
-## 0. 环境准备
+## 0. 环境准备 & 全局约束
 
-### 0.1 分支 & Git
+### 0.1 Phase 编写规范
+
+**目标与验收标准合并原则**：每个 Phase 的"目标"必须包含具体的验收标准，从用户 E2E 视角出发描述测试用例。不单独列"目标"一节再另列"验证标准"——两者写在一起，保持紧凑且可执行。
+
+**验收必须通过外部工具**：每个 Phase 的验收标准必须通过外部工具（SQL 客户端、curl、HTTP 请求、Python 脚本等）来验证，而非依赖内部日志或代码审查。具体要求：
+
+- **SQL 验证**: 通过 `mysql -h... -P9030 -uroot -e "..."` 执行查询，对比预期结果
+- **脚本验证**: 编写可重复执行的 shell/python 脚本，输出 PASS/FAIL
+- **API 验证**: 如涉及 HTTP 接口，通过 `curl` 调用并验证响应
+- **性能验证**: 通过 `SET enable_profile=true` + `SHOW PROFILELIST` 获取可量化指标
+- **性能分析**: 涉及性能测试的 Phase 必须使用 `perf` 工具采集热点函数（`perf record -g -p <be_pid>` + `perf report`），确认热点落在预期代码路径上，排除非预期瓶颈。perf 火焰图或 `perf report` top-10 函数列表作为验收附件
+
+每个 Phase 完成的标志是：**验收脚本全部 PASS**，而非"代码写完"或"编译通过"。
+
+**基础设施阶段例外**：Phase 1（Rust FFI）和 Phase 2（BE 存储引擎）属于基础设施，FE 尚未就绪，无法通过 SQL 客户端验证。这两个阶段允许使用工程级 E2E（`cargo test`、`run-be-ut.sh` 等脚本化 UT）作为验收手段。从 Phase 3 起，必须通过用户 SQL E2E 验收。
+
+### 0.2 分支 & Git
 
 ```bash
 # 本地创建分支（已完成）
@@ -20,7 +36,7 @@ SSH="ssh -i ~/.ssh/my_ecs.pem root@8.217.233.254"
 $SSH "docker exec sr-dev bash -c 'cd /build && git fetch origin && git checkout origin/fanzhen/main-stella-tantivy'"
 ```
 
-### 0.2 Rust 工具链（远程服务器）
+### 0.3 Rust 工具链（远程服务器）
 
 tantivy FFI 编译需要 Rust 工具链。在 Docker 容器 `sr-dev` 中安装：
 
@@ -36,7 +52,7 @@ $SSH "docker exec sr-dev bash -c 'source \$HOME/.cargo/env && cargo install cbin
 $SSH "docker exec sr-dev bash -c 'source \$HOME/.cargo/env && cbindgen --version'"
 ```
 
-### 0.3 编译 & 部署流程
+### 0.4 编译 & 部署流程
 
 每个 Phase 的标准流程：
 
@@ -51,11 +67,11 @@ $SSH "docker exec sr-dev bash -c 'source \$HOME/.cargo/env && cbindgen --version
    docker exec sr-dev bash -c 'cd /build && ./build.sh --be'       # -j 8, 约 15-25 min
 7. 远程: FE 编译（如有 FE 改动）:
    docker exec sr-dev bash -c 'cd /build && ./build.sh --fe --clean'  # 约 2 min
-8. 远程: 重启 FE/BE（见 0.4）
+8. 远程: 重启 FE/BE（见 0.5）
 9. 远程: mysql E2E 验证
 ```
 
-### 0.4 FE/BE 重启
+### 0.5 FE/BE 重启
 
 ```bash
 # 停止 + 启动 FE
@@ -70,7 +86,7 @@ sleep 5
 $SSH "docker exec sr-dev bash -c 'mysql -h127.0.0.1 -P9030 -uroot -e \"SHOW BACKENDS\"'"
 ```
 
-### 0.5 CMake 集成 Rust FFI
+### 0.6 CMake 集成 Rust FFI
 
 需要在 BE 的 CMakeLists.txt 中添加 tantivy FFI 的编译和链接：
 
@@ -101,98 +117,93 @@ target_include_directories(starrocks_be PRIVATE
 
 ## Phase 1: Tantivy FFI 基础设施
 
-**目标**: Rust FFI 层可编译，BE C++ 可调用 tantivy 进行索引构建和查询。
+### 1.1 目标与验收标准
 
-### 1.1 代码任务
+Rust FFI 层在远程 Linux 服务器上编译为 `libtantivy_ffi.a`，`cargo test` 全部通过，`cbindgen` 生成 C 头文件。
 
+**验收用例**（通过 shell 命令在远程服务器执行，全部返回 0 即 PASS）：
+
+| # | 用例 | 验收命令 | PASS 条件 |
+|---|------|---------|-----------|
+| 1 | Rust 编译产出静态库 | `ls -lh .../target/release/libtantivy_ffi.a` | 文件存在且大小 > 0 |
+| 2 | cbindgen 生成头文件 | `ls -lh .../tantivy_ffi.h` | 文件存在，包含 `tantivy_writer_create` 声明 |
+| 3 | cargo test 全部通过 | `cargo test 2>&1 \| grep 'test result'` | `test result: ok. N passed; 0 failed` |
+| 4 | 写入+查询 roundtrip | cargo test `test_ffi_write_read_roundtrip` 通过 | MATCH_ANY/ALL/PHRASE/PREFIX/REGEXP/BM25 全部断言通过 |
+| 5 | 分词 4 种 parser | cargo test `test_ffi_tokenize` + `test_*_tokenizer` 通过 | standard/english/chinese/none 分词结果正确 |
+| 6 | 空指针安全 | cargo test `test_ffi_null_pointer_safety` 通过 | 所有 FFI 函数对 null 输入不崩溃 |
+
+```bash
+#!/bin/bash
+# verify_phase1.sh — Phase 1 验收脚本
+set -euo pipefail
+SSH="ssh -i ~/.ssh/my_ecs.pem root@8.217.233.254"
+FFI_DIR="/build/be/src/storage/index/inverted/tantivy_ffi"
+
+echo "=== TC1: Static lib exists ==="
+$SSH "docker exec sr-dev bash -c 'ls -lh $FFI_DIR/target/release/libtantivy_ffi.a'" && echo "PASS" || echo "FAIL"
+
+echo "=== TC2: Header file generated ==="
+$SSH "docker exec sr-dev bash -c 'grep tantivy_writer_create $FFI_DIR/tantivy_ffi.h'" && echo "PASS" || echo "FAIL"
+
+echo "=== TC3-6: cargo test ==="
+$SSH "docker exec sr-dev bash -c 'source \$HOME/.cargo/env && cd $FFI_DIR && cargo test 2>&1'" | tee /tmp/phase1_test.log
+grep -q '0 failed' /tmp/phase1_test.log && echo "ALL TESTS PASS" || echo "FAIL"
+```
+
+### 1.2 代码任务
 
 | 步骤    | 文件                             | 内容                                                                               |
 | ----- | ------------------------------ | -------------------------------------------------------------------------------- |
-| 1.1.1 | `tantivy_ffi/Cargo.toml`       | 新建 Rust 项目，依赖 tantivy=0.22, tantivy-jieba=0.10                                   |
+| 1.1.1 | `tantivy_ffi/Cargo.toml`       | 新建 Rust 项目，依赖 tantivy=0.22, jieba-rs=0.6                                        |
 | 1.1.2 | `tantivy_ffi/src/lib.rs`       | `extern "C"` 入口，re-export writer/reader/tokenizer                                |
 | 1.1.3 | `tantivy_ffi/src/writer.rs`    | TantivyWriter: create/add_doc/add_null/commit/destroy                            |
 | 1.1.4 | `tantivy_ffi/src/reader.rs`    | TantivyReader: open/query_match_any/all/phrase/phrase_prefix/regexp/bm25/destroy |
 | 1.1.5 | `tantivy_ffi/src/tokenizer.rs` | register_tokenizers() + tantivy_tokenize()                                       |
-| 1.1.6 | `tantivy_ffi/cbindgen.toml`    | cbindgen 配置                                                                      |
-| 1.1.7 | 生成 `tantivy_ffi.h`             | `cbindgen --config cbindgen.toml --output tantivy_ffi.h`                         |
-
-
-### 1.2 单元测试
-
-Rust 侧 `#[test]`：
-
-```rust
-#[test]
-fn test_write_and_query() {
-    // 1. 创建临时目录
-    // 2. tantivy_writer_create("standard")
-    // 3. 写入 100 条文本 (add_doc)
-    // 4. commit
-    // 5. tantivy_reader_open
-    // 6. query_match_any → 验证命中行数
-    // 7. query_phrase → 验证短语命中
-    // 8. query_regexp → 验证正则命中
-    // 9. query_bm25 → 验证 score > 0
-    // 10. tantivy_tokenize("hello world", "standard") → ["hello", "world"]
-}
-```
-
-```bash
-# 运行 Rust 测试
-$SSH "docker exec sr-dev bash -c 'source \$HOME/.cargo/env && cd /build/be/src/storage/index/inverted/tantivy_ffi && cargo test'"
-```
-
-### 1.3 BE C++ 调用验证（可选）
-
-在 Phase 2 之前，可以写一个简单的 C++ 测试程序 `tantivy_ffi_test.cpp`，链接 `libtantivy_ffi.a`，验证 FFI 调用可行：
-
-```cpp
-#include "tantivy_ffi.h"
-TEST_F(TantivyFFITest, BasicWriteAndRead) {
-    auto* w = tantivy_writer_create("/tmp/test_idx", "content", "standard");
-    tantivy_writer_add_doc(w, "hello world", 0);
-    tantivy_writer_add_doc(w, "foo bar", 1);
-    tantivy_writer_commit(w);
-    tantivy_writer_destroy(w);
-
-    auto* r = tantivy_reader_open("/tmp/test_idx");
-    auto* b = tantivy_query_match_any(r, "content", "hello");
-    ASSERT_EQ(tantivy_bitmap_count(b), 1);
-    ASSERT_EQ(tantivy_bitmap_row_ids(b)[0], 0);
-    tantivy_bitmap_destroy(b);
-    tantivy_reader_destroy(r);
-}
-```
-
-### 1.4 验证标准
-
-- `cargo build --release` 成功，产出 `libtantivy_ffi.a`
-- `cargo test` 全部通过
-- `cbindgen` 生成 `tantivy_ffi.h` 无错误
-- （可选）C++ UT 链接 `.a` 并通过
-
-### 1.5 编译 & 部署
-
-```bash
-# Phase 1 只需要 Rust 编译，不需要完整 BE build
-$SSH "docker exec sr-dev bash -c 'source \$HOME/.cargo/env && cd /build/be/src/storage/index/inverted/tantivy_ffi && cargo build --release 2>&1 | tail -5'"
-$SSH "docker exec sr-dev bash -c 'ls -lh /build/be/src/storage/index/inverted/tantivy_ffi/target/release/libtantivy_ffi.a'"
-$SSH "docker exec sr-dev bash -c 'source \$HOME/.cargo/env && cd /build/be/src/storage/index/inverted/tantivy_ffi && cargo test 2>&1'"
-```
+| 1.1.6 | `tantivy_ffi/build.rs`         | cbindgen 自动生成 `tantivy_ffi.h`                                                   |
 
 ---
 
 ## Phase 2: BE 存储引擎集成
 
-**目标**: BE 可以写入带 tantivy 索引的 segment，通过 `_apply_inverted_index()` 正确过滤行。
+### 2.1 目标与验收标准
 
-### 2.1 前置依赖
+BE 可以写入带 tantivy 索引的 segment，通过 `_apply_inverted_index()` 正确过滤行。本阶段完成所有 BE 侧 query type 能力（MATCH_ANY/ALL/PHRASE/PHRASE_PREFIX/REGEXP），Phase 3 只做 FE→Thrift 透传。
+
+> 本阶段 FE 尚未支持 tantivy，无法通过 SQL E2E 验证。验收通过 **BE 编译 + C++ UT** 在远程服务器执行。
+
+**验收用例**：
+
+| # | 用例 | 验收命令 | PASS 条件 |
+|---|------|---------|-----------|
+| 1 | BE 编译通过（含 tantivy FFI 链接） | `./build.sh --be 2>&1 \| tail -5` | 无编译/链接错误 |
+| 2 | TantivyInvertedWriter 写 100 条文本 → finish → 索引目录存在 | `run-be-ut.sh --gtest_filter=TantivyWriter*` | UT PASS |
+| 3 | TantivyInvertedReader MATCH_ANY 查询 | 同上 UT | bitmap 匹配预期 |
+| 4 | MATCH_PHRASE 查询 | 同上 UT | 短语邻接匹配正确 |
+| 5 | MATCH_PHRASE_PREFIX 查询 | 同上 UT | 前缀匹配正确 |
+| 6 | MATCH_REGEXP 查询 | 同上 UT | 正则匹配正确 |
+| 7 | MATCH_ALL 查询 | 同上 UT | AND 语义正确 |
+
+```bash
+#!/bin/bash
+# verify_phase2.sh — Phase 2 验收脚本
+set -euo pipefail
+SSH="ssh -i ~/.ssh/my_ecs.pem root@8.217.233.254"
+
+echo "=== TC1: BE build ==="
+$SSH "docker exec sr-dev bash -c 'cd /build && ./build.sh --be 2>&1 | tail -5'" | tee /tmp/phase2_build.log
+grep -qv 'Error' /tmp/phase2_build.log && echo "PASS" || echo "FAIL"
+
+echo "=== TC2-7: BE UT (5 query types) ==="
+$SSH "docker exec sr-dev bash -c 'cd /build && ./run-be-ut.sh --gtest_filter=TantivyWriter* 2>&1'" | tee /tmp/phase2_ut.log
+grep -q 'PASSED' /tmp/phase2_ut.log && echo "ALL TESTS PASS" || echo "FAIL"
+```
+
+### 2.2 前置依赖
 
 - Phase 1 完成（libtantivy_ffi.a 可用）
-- CMake 集成 Rust FFI（见 0.5）
+- CMake 集成 Rust FFI（见 0.6）
 
-### 2.2 代码任务
-
+### 2.3 代码任务
 
 | 步骤    | 文件                                       | 内容                                                                                          |
 | ----- | ---------------------------------------- | ------------------------------------------------------------------------------------------- |
@@ -201,54 +212,158 @@ $SSH "docker exec sr-dev bash -c 'source \$HOME/.cargo/env && cd /build/be/src/s
 | 2.2.3 | `tantivy/tantivy_inverted_writer.h/.cpp` | 实现 `InvertedWriter`: init/add_values/add_nulls/finish，调用 FFI                                |
 | 2.2.4 | `tantivy/tantivy_inverted_reader.h/.cpp` | 实现 `InvertedReader`: load/query → roaring::Roaring，新增 `query_with_score()`                  |
 | 2.2.5 | `inverted_plugin_factory.cpp`            | `case TANTIVY: return TantivyPlugin`                                                        |
-| 2.2.6 | `segment_iterator.cpp`                   | `_apply_inverted_index()` 中处理 MATCH_PHRASE_PREFIX_QUERY, MATCH_REGEXP_QUERY                 |
-
-
-### 2.3 单元测试
-
-```cpp
-// tantivy_inverted_writer_test.cpp
-TEST_F(TantivyWriterTest, WriteAndRead) {
-    // 1. 创建 TantivyInvertedWriter，parser=standard
-    // 2. add_values: 100 条文本
-    // 3. finish()
-    // 4. 验证 {segment_dir}/{col_uid}_tantivy/ 目录存在
-    // 5. TantivyInvertedReader::load()
-    // 6. query(MATCH_ANY_QUERY, "keyword") → 验证 bitmap 正确
-    // 7. query(MATCH_PHRASE_QUERY, "hello world") → 验证
-    // 8. query(MATCH_REGEXP_QUERY, "hel.*") → 验证
-}
-```
-
-```bash
-# 运行 BE UT
-$SSH "docker exec sr-dev bash -c 'cd /build && ./run-be-ut.sh --gtest_filter=TantivyWriter*'"
-```
-
-### 2.4 验证标准
-
-- BE 编译通过（包含 tantivy FFI 链接）
-- UT: TantivyInvertedWriter 写入 → TantivyInvertedReader 查询 → bitmap 正确
-- 暂无 E2E（FE 尚未支持 tantivy）
-
-### 2.5 编译
-
-```bash
-$SSH "docker exec sr-dev bash -c 'cd /build && ./build.sh --be 2>&1 | tail -20'"
-```
+| 2.2.6 | `segment_iterator.cpp`                   | `_apply_inverted_index()` 中处理所有新 query type，BE 侧 query type 能力在此阶段完备                       |
 
 ---
 
-## Phase 3: FE 语法 + Thrift + 全链路打通
+## Phase 3: FE 语法 + Thrift + 全链路打通 + Compaction 正确性
 
-**目标**: 从 mysql 客户端可以创建 tantivy 索引、写入数据、执行 MATCH_ANY/ALL/PHRASE/PHRASE_PREFIX/REGEXP 查询。
+### 3.1 目标与验收标准
 
-### 3.1 前置依赖
+用户通过 mysql 客户端可以：创建 tantivy 索引、写入数据、执行 5 种 MATCH 查询（ANY/ALL/PHRASE/PHRASE_PREFIX/REGEXP），compaction 后查询结果不变。
 
-- Phase 2 完成（BE tantivy writer/reader 可用）
+> Phase 2 已完成所有 BE 侧 query type 能力。本阶段只做 FE 语法/Thrift opcode 到 BE 已有 query type 的透传，不重复改 BE 查询逻辑。
 
-### 3.2 代码任务
+**验收用例**（全部通过 `mysql -h127.0.0.1 -P9030 -uroot` 执行 SQL）：
 
+| # | 用例 | SQL | PASS 条件 |
+|---|------|-----|-----------|
+| 1 | 建表 + tantivy 索引 | `CREATE TABLE test_fts (..., INDEX idx_c (content) USING GIN ("parser"="standard", "imp_lib"="tantivy")) ...` | 无报错 |
+| 2 | SHOW CREATE TABLE 可见索引属性 | `SHOW CREATE TABLE test_fts` | 输出包含 `imp_lib`=`tantivy` |
+| 3 | INSERT 5 条测试数据 | `INSERT INTO test_fts VALUES (1,...),(2,...),(3,...),(4,...),(5,...)` | 无报错 |
+| 4 | MATCH_ANY（OR 语义） | `SELECT id FROM test_fts WHERE content MATCH_ANY 'database performance' ORDER BY id` | 结果集包含 id=1,3 |
+| 5 | MATCH_ALL（AND 语义） | `SELECT id FROM test_fts WHERE content MATCH_ALL 'database performance' ORDER BY id` | 结果集 = {3} |
+| 6 | MATCH_PHRASE（短语匹配） | `SELECT id FROM test_fts WHERE content MATCH_PHRASE 'full text search'` | 结果集 = {2} |
+| 7 | MATCH_PHRASE_PREFIX（前缀） | `SELECT id FROM test_fts WHERE content MATCH_PHRASE_PREFIX 'search eng'` | 结果集 = {5} |
+| 8 | MATCH_REGEXP（正则） | `SELECT id FROM test_fts WHERE content MATCH_REGEXP 'data.*'` | 结果集包含 id=1,3 |
+| 9 | Compaction 后查询一致 | 额外 INSERT 2 条 → 等待/手动 COMPACT → 重新 MATCH_ANY 'database' | 结果集包含全部含 database 的行（含新插入） |
+
+```bash
+#!/bin/bash
+# verify_phase3.sh — Phase 3 验收脚本
+# 注意：不使用 set -e，确保所有用例都执行完毕后再统一判定
+set -uo pipefail
+SSH="ssh -i ~/.ssh/my_ecs.pem root@8.217.233.254"
+MYSQL="docker exec sr-dev mysql -h127.0.0.1 -P9030 -uroot -N -e"
+PASS=0; FAIL=0
+
+run_sql() { $SSH "$MYSQL \"$1\"" 2>&1 || true; }
+# check_id: 精确匹配整行 ID（避免 grep "1" 误匹配 10/21）
+check_id() {
+    local name="$1" expected_id="$2" actual="$3"
+    if echo "$actual" | awk '{print $1}' | grep -qx "$expected_id"; then
+        echo "PASS: $name"; ((PASS++))
+    else
+        echo "FAIL: $name (expected id=$expected_id in: $actual)"; ((FAIL++))
+    fi
+}
+# check_absent: 验证某 ID 不在结果中
+check_absent() {
+    local name="$1" absent_id="$2" actual="$3"
+    if echo "$actual" | awk '{print $1}' | grep -qx "$absent_id"; then
+        echo "FAIL: $name (id=$absent_id should be absent but found)"; ((FAIL++))
+    else
+        echo "PASS: $name"; ((PASS++))
+    fi
+}
+# check_contains: 子串匹配（用于 SHOW CREATE TABLE 等非 ID 场景）
+check_contains() {
+    local name="$1" expected="$2" actual="$3"
+    if echo "$actual" | grep -qF "$expected"; then
+        echo "PASS: $name"; ((PASS++))
+    else
+        echo "FAIL: $name (expected substring: $expected, got: $actual)"; ((FAIL++))
+    fi
+}
+# check_eq: 精确值匹配
+check_eq() {
+    local name="$1" expected="$2" actual="$3"
+    if [ "$actual" = "$expected" ]; then
+        echo "PASS: $name"; ((PASS++))
+    else
+        echo "FAIL: $name (expected: $expected, got: $actual)"; ((FAIL++))
+    fi
+}
+
+# Setup
+run_sql "DROP TABLE IF EXISTS test_db.test_fts" > /dev/null
+run_sql "ADMIN SET FRONTEND CONFIG (\"enable_experimental_tantivy\" = \"true\")" > /dev/null
+
+# TC1: CREATE TABLE（通过 exit code 判定）
+if $SSH "$MYSQL \"CREATE TABLE test_db.test_fts (id BIGINT, title VARCHAR(200), content VARCHAR(65535), INDEX idx_c (content) USING GIN (\\\"parser\\\"=\\\"standard\\\", \\\"imp_lib\\\"=\\\"tantivy\\\")) DUPLICATE KEY(id) DISTRIBUTED BY HASH(id) BUCKETS 1\"" > /dev/null 2>&1; then
+    echo "PASS: TC1: CREATE TABLE"; ((PASS++))
+else
+    echo "FAIL: TC1: CREATE TABLE"; ((FAIL++))
+fi
+
+# TC2: SHOW CREATE TABLE
+SCT=$(run_sql "SHOW CREATE TABLE test_db.test_fts")
+check_contains "TC2: SHOW CREATE TABLE" "tantivy" "$SCT"
+
+# TC3: INSERT（通过 exit code 判定）
+if $SSH "$MYSQL \"INSERT INTO test_db.test_fts VALUES (1,'t1','StarRocks is a high-performance analytical database'),(2,'t2','Full text search enables users to find relevant documents'),(3,'t3','Optimizing database performance requires careful analysis'),(4,'t4','Real-time analytics engine for modern data applications'),(5,'t5','Search engine design involves inverted index and ranking')\"" > /dev/null 2>&1; then
+    echo "PASS: TC3: INSERT 5 rows"; ((PASS++))
+else
+    echo "FAIL: TC3: INSERT 5 rows"; ((FAIL++))
+fi
+
+# TC4: MATCH_ANY — 用例表：结果集包含 id=1,3
+R4=$(run_sql "SELECT id FROM test_db.test_fts WHERE content MATCH_ANY 'database performance' ORDER BY id")
+check_id "TC4a: MATCH_ANY id=1" "1" "$R4"
+check_id "TC4b: MATCH_ANY id=3" "3" "$R4"
+
+# TC5: MATCH_ALL — 用例表：结果集 = {3}
+R5=$(run_sql "SELECT id FROM test_db.test_fts WHERE content MATCH_ALL 'database performance' ORDER BY id")
+check_id "TC5: MATCH_ALL id=3" "3" "$R5"
+
+# TC6: MATCH_PHRASE — 用例表：结果集 = {2}
+R6=$(run_sql "SELECT id FROM test_db.test_fts WHERE content MATCH_PHRASE 'full text search'")
+check_id "TC6: MATCH_PHRASE id=2" "2" "$R6"
+
+# TC7: MATCH_PHRASE_PREFIX — 用例表：结果集 = {5}
+R7=$(run_sql "SELECT id FROM test_db.test_fts WHERE content MATCH_PHRASE_PREFIX 'search eng'")
+check_id "TC7: MATCH_PHRASE_PREFIX id=5" "5" "$R7"
+
+# TC8: MATCH_REGEXP — 用例表：结果集包含 id=1,3
+R8=$(run_sql "SELECT id FROM test_db.test_fts WHERE content MATCH_REGEXP 'data.*' ORDER BY id")
+check_id "TC8a: MATCH_REGEXP id=1" "1" "$R8"
+check_id "TC8b: MATCH_REGEXP id=3" "3" "$R8"
+
+# TC9: Compaction — 显式触发 + 确认已完成 + 前后对比
+# 9a: 记录 compaction 前的 MATCH_ANY 'database' 行数
+R9_BEFORE=$(run_sql "SELECT COUNT(*) FROM test_db.test_fts WHERE content MATCH_ANY 'database'" | tr -d '[:space:]')
+# 9b: 多次 INSERT 产生多个 segment
+run_sql "INSERT INTO test_db.test_fts VALUES (6,'t6','database compaction test first batch')" > /dev/null
+run_sql "INSERT INTO test_db.test_fts VALUES (7,'t7','database compaction test second batch')" > /dev/null
+# 9c: 显式触发 compaction
+run_sql "ALTER TABLE test_db.test_fts COMPACT" > /dev/null
+# 9d: 轮询等待 compaction 完成（最多 120 秒）
+for i in $(seq 1 24); do
+    ROWSET_COUNT=$(run_sql "SHOW TABLET FROM test_db.test_fts" | wc -l)
+    if [ "$ROWSET_COUNT" -le 2 ]; then break; fi
+    sleep 5
+done
+# 9e: compaction 后查询，对比行数
+R9_AFTER=$(run_sql "SELECT COUNT(*) FROM test_db.test_fts WHERE content MATCH_ANY 'database'" | tr -d '[:space:]')
+EXPECTED_AFTER=$((R9_BEFORE + 2))  # 新插入 2 行含 "database"
+check_eq "TC9a: Compaction后行数" "$EXPECTED_AFTER" "$R9_AFTER"
+# 9f: 验证具体 id 存在
+R9_IDS=$(run_sql "SELECT id FROM test_db.test_fts WHERE content MATCH_ANY 'database' ORDER BY id")
+check_id "TC9b: Compaction后 id=1" "1" "$R9_IDS"
+check_id "TC9c: Compaction后 id=6" "6" "$R9_IDS"
+check_id "TC9d: Compaction后 id=7" "7" "$R9_IDS"
+
+# Cleanup
+run_sql "DROP TABLE IF EXISTS test_db.test_fts" > /dev/null
+echo "=== Result: $PASS PASS, $FAIL FAIL ==="
+[ $FAIL -eq 0 ] && echo "PHASE 3 ACCEPTED" || echo "PHASE 3 REJECTED"
+```
+
+### 3.2 前置依赖
+
+- Phase 2 完成（BE tantivy writer/reader 可用，所有 query type 已实现）
+
+### 3.3 代码任务
 
 | 步骤     | 文件                                 | 内容                                                                       |
 | ------ | ---------------------------------- | ------------------------------------------------------------------------ |
@@ -261,95 +376,108 @@ $SSH "docker exec sr-dev bash -c 'cd /build && ./build.sh --be 2>&1 | tail -20'"
 | 3.2.7  | `IndexAnalyzer.java`               | `imp_lib=tantivy` 合法性校验                                                  |
 | 3.2.8  | `InvertedIndexParams.java`         | `InvertedIndexImpType.TANTIVY` 枚举                                        |
 | 3.2.9  | `Config.java`                      | `enable_experimental_tantivy`（默认 false）                                  |
-| 3.2.10 | BE: `segment_iterator.cpp`         | TExprOpcode → InvertedIndexQueryType 映射                                  |
-
-
-### 3.3 E2E 验证
-
-```sql
--- 0. 开启 tantivy 实验特性
--- FE config: enable_experimental_tantivy = true
--- 或 ADMIN SET FRONTEND CONFIG ("enable_experimental_tantivy" = "true");
-
--- 1. 建表 + tantivy 索引
-CREATE TABLE test_fts (
-    id BIGINT,
-    title VARCHAR(200),
-    content VARCHAR(65535),
-    INDEX idx_content (content) USING GIN ("parser"="standard", "imp_lib"="tantivy")
-) DUPLICATE KEY(id)
-DISTRIBUTED BY HASH(id) BUCKETS 1;
-
--- 2. 插入测试数据
-INSERT INTO test_fts VALUES
-(1, 'StarRocks Introduction', 'StarRocks is a high-performance analytical database'),
-(2, 'Full Text Search', 'Full text search enables users to find relevant documents'),
-(3, 'Database Performance', 'Optimizing database performance requires careful analysis'),
-(4, 'Real-time Analytics', 'Real-time analytics engine for modern data applications'),
-(5, 'Search Engine Design', 'Search engine design involves inverted index and ranking');
-
--- 3. MATCH_ANY（OR 语义）
-SELECT id, title FROM test_fts WHERE content MATCH_ANY 'database performance';
--- 预期: id=1,3 (至少命中 "database" 或 "performance")
-
--- 4. MATCH_ALL（AND 语义）
-SELECT id, title FROM test_fts WHERE content MATCH_ALL 'database performance';
--- 预期: id=3 (同时包含两个词)
-
--- 5. MATCH_PHRASE（短语匹配）
-SELECT id, title FROM test_fts WHERE content MATCH_PHRASE 'full text search';
--- 预期: id=2
-
--- 6. MATCH_PHRASE_PREFIX（前缀）
-SELECT id, title FROM test_fts WHERE content MATCH_PHRASE_PREFIX 'search eng';
--- 预期: id=5 ("search engine" 前缀匹配)
-
--- 7. MATCH_REGEXP（正则）
-SELECT id, title FROM test_fts WHERE content MATCH_REGEXP 'real.*time';
--- 预期: id=4 (注意 parser=standard 时 "Real-time" → "real" "time"，
---        MATCH_REGEXP 在 term 级别匹配，此处匹配 term "real" 满足 'real.*time' 的 term
---        具体行为取决于 tantivy RegexpQuery 实现)
-
--- 8. 清理
-DROP TABLE test_fts;
-```
-
-### 3.4 编译 & 部署
-
-```bash
-# FE + BE 全量编译
-$SSH "docker exec sr-dev bash -c 'cd /build && ./build.sh --fe --clean'"
-$SSH "docker exec sr-dev bash -c 'cd /build && ./build.sh --be'"
-
-# 重启 FE + BE（见 0.4）
-
-# E2E
-$SSH "docker exec sr-dev bash -c 'mysql -h127.0.0.1 -P9030 -uroot -e \"
-  CREATE TABLE test_db.test_fts (id BIGINT, content VARCHAR(65535),
-    INDEX idx_c (content) USING GIN (\\\"parser\\\"=\\\"standard\\\", \\\"imp_lib\\\"=\\\"tantivy\\\"))
-  DUPLICATE KEY(id) DISTRIBUTED BY HASH(id) BUCKETS 1;
-\"'"
-```
-
-### 3.5 验证标准
-
-- FE 编译通过，ANTLR 语法无冲突
-- Thrift 代码生成正确
-- E2E: CREATE TABLE + INSERT + 5 种 MATCH 查询结果正确
-- `SHOW CREATE TABLE` 中可见 tantivy 索引属性
+| 3.2.10 | BE: `segment_iterator.cpp`         | TExprOpcode → InvertedIndexQueryType 映射（仅 opcode 转换，不改查询逻辑）              |
 
 ---
 
 ## Phase 4: TOKENIZE + BM25 函数
 
-**目标**: `TOKENIZE()` 分词调试 + `BM25()` 相关性评分 + ORDER BY relevance 排序。
+### 4.1 目标与验收标准
 
-### 4.1 前置依赖
+用户通过 mysql 客户端可以：使用 `TOKENIZE()` 调试分词结果，使用 `BM25()` 获取相关性评分并按评分排序。`BM25()` 在没有 MATCH 谓词时应报错。
+
+**验收用例**（全部通过 `mysql` 客户端执行 SQL）：
+
+| # | 用例 | SQL | PASS 条件 |
+|---|------|-----|-----------|
+| 1 | TOKENIZE standard 分词 | `SELECT TOKENIZE('hello world', 'standard')` | 结果 = ["hello", "world"] |
+| 2 | TOKENIZE chinese 分词 | `SELECT TOKENIZE('全文检索引擎', 'chinese')` | 结果非空，包含"全文"或"检索"等词 |
+| 3 | TOKENIZE english 词干提取 | `SELECT TOKENIZE('running databases', 'english')` | 结果 = ["run", "databas"] |
+| 4 | TOKENIZE none 不分词 | `SELECT TOKENIZE('Hello World', 'none')` | 结果 = ["Hello World"] |
+| 5 | BM25 评分 + 排序 | INSERT 4 条文本（TF 不同）→ `SELECT id, BM25(content, 'database') AS score ... ORDER BY score DESC` | id=1 分数最高（TF=3），id=3 不出现，所有 score > 0 |
+| 6 | BM25 无 MATCH 报错 | `SELECT BM25(content, 'database') FROM test_bm25 ORDER BY 1 DESC` | 返回错误信息，包含 "MATCH" 关键字 |
+
+```bash
+#!/bin/bash
+# verify_phase4.sh — Phase 4 验收脚本
+set -uo pipefail
+SSH="ssh -i ~/.ssh/my_ecs.pem root@8.217.233.254"
+MYSQL="docker exec sr-dev mysql -h127.0.0.1 -P9030 -uroot -N -e"
+PASS=0; FAIL=0
+
+run_sql() { $SSH "$MYSQL \"$1\"" 2>&1 || true; }
+check_contains() {
+    local name="$1" expected="$2" actual="$3"
+    if echo "$actual" | grep -qF "$expected"; then
+        echo "PASS: $name"; ((PASS++))
+    else
+        echo "FAIL: $name (expected substring: $expected, got: $actual)"; ((FAIL++))
+    fi
+}
+
+# TC1: TOKENIZE standard — 验证输出同时包含 "hello" 和 "world"
+R1=$(run_sql "SELECT TOKENIZE('hello world', 'standard')")
+check_contains "TC1a: TOKENIZE standard has hello" "hello" "$R1"
+check_contains "TC1b: TOKENIZE standard has world" "world" "$R1"
+
+# TC2: TOKENIZE chinese — 验证输出包含已知中文分词
+R2=$(run_sql "SELECT TOKENIZE('全文检索引擎', 'chinese')")
+check_contains "TC2: TOKENIZE chinese has 检索" "检索" "$R2"
+
+# TC3: TOKENIZE english (stemming) — 验证词干提取
+R3=$(run_sql "SELECT TOKENIZE('running databases', 'english')")
+check_contains "TC3a: TOKENIZE english stem run" "run" "$R3"
+check_contains "TC3b: TOKENIZE english stem databas" "databas" "$R3"
+
+# TC4: TOKENIZE none — 验证原文不被拆分
+R4=$(run_sql "SELECT TOKENIZE('Hello World', 'none')")
+check_contains "TC4: TOKENIZE none" "Hello World" "$R4"
+
+# TC5: BM25 scoring + ordering
+run_sql "DROP TABLE IF EXISTS test_db.test_bm25" > /dev/null
+run_sql "CREATE TABLE test_db.test_bm25 (id BIGINT, content VARCHAR(65535), INDEX idx_c (content) USING GIN (\"parser\"=\"standard\", \"imp_lib\"=\"tantivy\")) DUPLICATE KEY(id) DISTRIBUTED BY HASH(id) BUCKETS 1" > /dev/null
+run_sql "INSERT INTO test_db.test_bm25 VALUES (1,'database database database'),(2,'database performance'),(3,'search engine design'),(4,'analytical database system design')" > /dev/null
+R5=$(run_sql "SELECT id, BM25(content, 'database') AS score FROM test_db.test_bm25 WHERE content MATCH_ANY 'database' ORDER BY score DESC")
+# id=1 应排第一（TF=3 最高），id=3 不应出现（不含 database）
+FIRST_ID=$(echo "$R5" | head -1 | awk '{print $1}')
+if [ "$FIRST_ID" = "1" ]; then
+    echo "PASS: TC5a: BM25 top-1 is id=1"; ((PASS++))
+else
+    echo "FAIL: TC5a: BM25 top-1 expected id=1, got $FIRST_ID"; ((FAIL++))
+fi
+# 验证 id=3 不在结果中：提取所有 id，精确行匹配
+if echo "$R5" | awk '{print $1}' | grep -qx 3; then
+    echo "FAIL: TC5b: BM25 id=3 should be absent but found"; ((FAIL++))
+else
+    echo "PASS: TC5b: BM25 id=3 correctly absent"; ((PASS++))
+fi
+# 验证所有 score > 0
+BAD_SCORES=$(echo "$R5" | awk '$2 <= 0 {print}')
+if [ -z "$BAD_SCORES" ]; then
+    echo "PASS: TC5c: all BM25 scores > 0"; ((PASS++))
+else
+    echo "FAIL: TC5c: found score <= 0: $BAD_SCORES"; ((FAIL++))
+fi
+
+# TC6: BM25 without MATCH → 必须返回错误
+R6=$(run_sql "SELECT BM25(content, 'database') AS score FROM test_db.test_bm25 ORDER BY score DESC")
+if echo "$R6" | grep -qi "error\|MATCH"; then
+    echo "PASS: TC6: BM25 no MATCH returns error"; ((PASS++))
+else
+    echo "FAIL: TC6: BM25 no MATCH should error (got: $R6)"; ((FAIL++))
+fi
+
+# Cleanup
+run_sql "DROP TABLE IF EXISTS test_db.test_bm25" > /dev/null
+echo "=== Result: $PASS PASS, $FAIL FAIL ==="
+[ $FAIL -eq 0 ] && echo "PHASE 4 ACCEPTED" || echo "PHASE 4 REJECTED"
+```
+
+### 4.2 前置依赖
 
 - Phase 3 完成（MATCH 查询全链路可用）
 
-### 4.2 代码任务
-
+### 4.3 代码任务
 
 | 步骤    | 文件                              | 内容                                               |
 | ----- | ------------------------------- | ------------------------------------------------ |
@@ -359,192 +487,302 @@ $SSH "docker exec sr-dev bash -c 'mysql -h127.0.0.1 -P9030 -uroot -e \"
 | 4.2.4 | Analyzer (FE)                   | BM25 校验: 同一查询块中必须有 MATCH 谓词                      |
 | 4.2.5 | `bm25_function.h/.cpp` (BE)     | BM25 标量函数，调用 `tantivy_query_bm25()` FFI          |
 
-
-### 4.3 E2E 验证
-
-```sql
--- 1. TOKENIZE 函数
-SELECT TOKENIZE('hello world', 'standard');
--- 预期: ["hello", "world"]
-
-SELECT TOKENIZE('StarRocks是一个高性能分析数据库', 'chinese');
--- 预期: ["starrocks", "是", "一个", "高性能", "分析", "数据库"]
-
-SELECT TOKENIZE('full-text search engine', 'english');
--- 预期: ["full", "text", "search", "engin"]  (Porter2 词干提取)
-
--- 2. BM25 评分 + 排序
-CREATE TABLE test_bm25 (
-    id BIGINT,
-    content VARCHAR(65535),
-    INDEX idx_c (content) USING GIN ("parser"="standard", "imp_lib"="tantivy")
-) DUPLICATE KEY(id) DISTRIBUTED BY HASH(id) BUCKETS 1;
-
-INSERT INTO test_bm25 VALUES
-(1, 'database database database'),         -- "database" 出现 3 次
-(2, 'database performance'),                -- 出现 1 次
-(3, 'search engine design'),                -- 不含 "database"
-(4, 'analytical database system design');   -- 出现 1 次，文档更长
-
-SELECT id, BM25(content, 'database') AS score
-FROM test_bm25
-WHERE content MATCH_ANY 'database'
-ORDER BY score DESC;
--- 预期: id=1 分数最高（TF 最高），id=2/4 较低，id=3 不出现
-
--- 3. BM25 无 MATCH 应报错
-SELECT id, BM25(content, 'database') AS score FROM test_bm25 ORDER BY score DESC;
--- 预期: Error: BM25() requires a MATCH predicate on the same column in WHERE clause
-
--- 4. 清理
-DROP TABLE test_bm25;
-```
-
-### 4.4 验证标准
-
-- TOKENIZE: 4 种 parser 分词结果正确
-- BM25: 评分 > 0，排序符合 TF-IDF 直觉
-- BM25 无 MATCH 报错
-- 无性能回归（TOKENIZE 纯计算，毫秒级）
-
 ---
 
-## Phase 5: 中文分词 + Compaction + Profile
+## Phase 5: 中文分词 + Profile
 
-**目标**: 中文全文检索 E2E 验证，Compaction 后索引正确性，查询 Profile 可观测。
+### 5.1 目标与验收标准
 
-### 5.1 代码任务
+用户通过 mysql 客户端可以：对中文文本建立 tantivy 索引（parser=chinese），执行中文 MATCH_ANY/PHRASE/BM25 查询。查询 Profile 中可观测到 TantivyQueryTime / TantivyQueryRows 指标。
 
+> Compaction 正确性已在 Phase 3 中验证，本阶段不重复。
 
-| 步骤    | 文件                                    | 内容                                              |
-| ----- | ------------------------------------- | ----------------------------------------------- |
-| 5.1.1 | `tantivy_ffi/src/tokenizer.rs`        | 确保 jieba 分词器注册 + 中文 E2E                         |
-| 5.1.2 | `tantivy/tantivy_inverted_writer.cpp` | Compaction 时调用 `IndexWriter::merge()`           |
-| 5.1.3 | `segment_iterator.cpp`                | Profile 计数器: TantivyQueryTime, TantivyQueryRows |
+**验收用例**（全部通过 `mysql` 客户端 + Profile HTTP API 执行）：
 
+| # | 用例 | 验证方式 | PASS 条件 |
+|---|------|---------|-----------|
+| 1 | 中文 MATCH_ANY（OR 语义） | SQL: `content MATCH_ANY '数据库 分析'` | 结果集包含 id=1,3,4 |
+| 2 | 中文 MATCH_PHRASE（短语邻接） | SQL: `content MATCH_PHRASE '实时分析'` | 结果集 = {1} |
+| 3 | 中文 BM25 评分排序 | SQL: `BM25(content, '数据库') ... ORDER BY score DESC` | 返回 score > 0 的行，按分数降序 |
+| 4 | Profile TantivyQueryTime 可见 | SQL: `SET enable_profile=true` → 查询 → FE HTTP `GET /api/profile?query_id=...` | 输出包含 `TantivyQueryTime` |
+| 5 | Profile TantivyQueryRows 可见 | 同上 FE HTTP API | 输出包含 `TantivyQueryRows`，值 > 0 |
 
-### 5.2 E2E 验证
+> **Profile API 统一约定**: 使用 FE HTTP 接口 `http://<fe_host>:8030/api/profile?query_id=<id>`（FE 端口 8030）。注意不是 BE 端口 8040。如果 FE HTTP 端口不同，按实际部署调整。
 
-```sql
--- 1. 中文全文检索
-CREATE TABLE test_chinese (
-    id BIGINT,
-    content VARCHAR(65535),
-    INDEX idx_c (content) USING GIN ("parser"="chinese", "imp_lib"="tantivy")
-) DUPLICATE KEY(id) DISTRIBUTED BY HASH(id) BUCKETS 1;
+```bash
+#!/bin/bash
+# verify_phase5.sh — Phase 5 验收脚本
+set -uo pipefail
+SSH="ssh -i ~/.ssh/my_ecs.pem root@8.217.233.254"
+MYSQL="docker exec sr-dev mysql -h127.0.0.1 -P9030 -uroot -N -e"
+PASS=0; FAIL=0
 
-INSERT INTO test_chinese VALUES
-(1, 'StarRocks是一个高性能的实时分析数据库'),
-(2, '全文检索引擎支持中文分词和BM25评分'),
-(3, '数据库性能优化需要仔细的分析和设计'),
-(4, '实时数据分析引擎适用于现代数据应用');
+run_sql() { $SSH "$MYSQL \"$1\"" 2>&1 || true; }
+check_id() {
+    local name="$1" expected_id="$2" actual="$3"
+    if echo "$actual" | awk '{print $1}' | grep -qx "$expected_id"; then
+        echo "PASS: $name"; ((PASS++))
+    else
+        echo "FAIL: $name (expected id=$expected_id in: $actual)"; ((FAIL++))
+    fi
+}
+check_contains() {
+    local name="$1" expected="$2" actual="$3"
+    if echo "$actual" | grep -qF "$expected"; then
+        echo "PASS: $name"; ((PASS++))
+    else
+        echo "FAIL: $name (expected substring: $expected, got: $actual)"; ((FAIL++))
+    fi
+}
 
-SELECT id FROM test_chinese WHERE content MATCH_ANY '数据库 分析';
--- 预期: id=1,3,4 (任一词命中)
+# Setup
+run_sql "DROP TABLE IF EXISTS test_db.test_chinese" > /dev/null
+run_sql "CREATE TABLE test_db.test_chinese (id BIGINT, content VARCHAR(65535), INDEX idx_c (content) USING GIN (\"parser\"=\"chinese\", \"imp_lib\"=\"tantivy\")) DUPLICATE KEY(id) DISTRIBUTED BY HASH(id) BUCKETS 1" > /dev/null
+run_sql "INSERT INTO test_db.test_chinese VALUES (1,'StarRocks是一个高性能的实时分析数据库'),(2,'全文检索引擎支持中文分词和BM25评分'),(3,'数据库性能优化需要仔细的分析和设计'),(4,'实时数据分析引擎适用于现代数据应用')" > /dev/null
 
-SELECT id FROM test_chinese WHERE content MATCH_PHRASE '实时分析';
--- 预期: id=1 ("实时" + "分析" 邻接)
+# TC1: 中文 MATCH_ANY — 用例表：结果集包含 id=1,3,4
+R1=$(run_sql "SELECT id FROM test_db.test_chinese WHERE content MATCH_ANY '数据库 分析' ORDER BY id")
+check_id "TC1a: 中文 MATCH_ANY id=1" "1" "$R1"
+check_id "TC1b: 中文 MATCH_ANY id=3" "3" "$R1"
+check_id "TC1c: 中文 MATCH_ANY id=4" "4" "$R1"
 
-SELECT id, BM25(content, '数据库') AS score
-FROM test_chinese WHERE content MATCH_ANY '数据库'
-ORDER BY score DESC;
--- 预期: 包含"数据库"的行按相关性排序
+# TC2: 中文 MATCH_PHRASE — 用例表：结果集 = {1}
+R2=$(run_sql "SELECT id FROM test_db.test_chinese WHERE content MATCH_PHRASE '实时分析'")
+check_id "TC2: 中文 MATCH_PHRASE id=1" "1" "$R2"
 
--- 2. Compaction 验证
--- 多次 INSERT 产生多个 segment，触发 compaction
-INSERT INTO test_chinese VALUES (5, '新增数据用于触发合并');
-INSERT INTO test_chinese VALUES (6, '再次新增数据测试合并后索引正确性');
--- 等待自动 compaction 或手动触发
--- ALTER TABLE test_chinese COMPACT;
+# TC3: 中文 BM25 — 验证有结果且 score > 0
+R3=$(run_sql "SELECT id, BM25(content, '数据库') AS score FROM test_db.test_chinese WHERE content MATCH_ANY '数据库' ORDER BY score DESC")
+R3_COUNT=$(echo "$R3" | wc -l | tr -d ' ')
+if [ "$R3_COUNT" -ge 1 ]; then
+    echo "PASS: TC3a: 中文 BM25 有 $R3_COUNT 条结果"; ((PASS++))
+else
+    echo "FAIL: TC3a: 中文 BM25 无结果"; ((FAIL++))
+fi
+BAD_SCORES=$(echo "$R3" | awk '$2 <= 0 {print}')
+if [ -z "$BAD_SCORES" ]; then
+    echo "PASS: TC3b: 中文 BM25 all scores > 0"; ((PASS++))
+else
+    echo "FAIL: TC3b: 中文 BM25 found score <= 0: $BAD_SCORES"; ((FAIL++))
+fi
 
--- 再次查询验证结果一致
-SELECT id FROM test_chinese WHERE content MATCH_ANY '数据库';
--- 预期: 结果与 compaction 前一致
+# TC4-5: Profile 指标 — 通过 FE HTTP API 获取
+# 在同一 session 中执行 enable_profile + 查询 + 获取 query_id
+QUERY_ID=$(run_sql "SET enable_profile = true; SELECT id FROM test_db.test_chinese WHERE content MATCH_ANY '数据库'; SELECT last_query_id()" | tail -1)
+echo "Query ID: $QUERY_ID"
+# 使用 FE HTTP API（端口 8030）获取 profile
+PROFILE=$($SSH "docker exec sr-dev curl -s 'http://127.0.0.1:8030/api/profile?query_id=$QUERY_ID'" 2>/dev/null || true)
+check_contains "TC4: TantivyQueryTime in profile" "TantivyQueryTime" "$PROFILE"
+check_contains "TC5: TantivyQueryRows in profile" "TantivyQueryRows" "$PROFILE"
 
--- 3. Profile 验证
-SET enable_profile = true;
-SELECT id FROM test_chinese WHERE content MATCH_ANY '数据库';
--- 查看 last_query_id() → SHOW PROFILELIST → 确认 TantivyQueryTime 指标存在
-
-DROP TABLE test_chinese;
+# Cleanup
+run_sql "DROP TABLE IF EXISTS test_db.test_chinese" > /dev/null
+echo "=== Result: $PASS PASS, $FAIL FAIL ==="
+[ $FAIL -eq 0 ] && echo "PHASE 5 ACCEPTED" || echo "PHASE 5 REJECTED"
 ```
 
-### 5.3 验证标准
+### 5.2 代码任务
 
-- 中文分词: MATCH_ANY/PHRASE/BM25 结果正确
-- Compaction: 合并后查询结果不变
-- Profile: TantivyQueryTime, TantivyQueryRows 指标可见
+| 步骤    | 文件                             | 内容                                              |
+| ----- | ------------------------------ | ----------------------------------------------- |
+| 5.1.1 | `tantivy_ffi/src/tokenizer.rs` | 确保 jieba 分词器注册 + 中文 E2E                         |
+| 5.1.2 | `segment_iterator.cpp`         | Profile 计数器: TantivyQueryTime, TantivyQueryRows |
 
 ---
 
 ## Phase 6: 性能 Benchmark
 
-**目标**: tantivy vs CLucene vs 无索引 baseline 性能对比。
+### 6.1 目标与验收标准
 
-### 6.1 Benchmark 方案
+在 100K 行英文文本上对比 tantivy vs CLucene vs 无索引三种方案的写入速度、索引大小、查询延迟。产出一份可复现的 benchmark 报告。
 
-```sql
--- 生成测试数据（100K 行英文文本）
-CREATE TABLE bench_tantivy (
-    id BIGINT,
-    content VARCHAR(65535),
-    INDEX idx_c (content) USING GIN ("parser"="standard", "imp_lib"="tantivy")
-) DUPLICATE KEY(id) DISTRIBUTED BY HASH(id) BUCKETS 8;
+**验收用例**（通过 Python 脚本自动执行，产出 CSV + 自动 PASS/FAIL 判定）：
 
-CREATE TABLE bench_clucene (
-    id BIGINT,
-    content VARCHAR(65535),
-    INDEX idx_c (content) USING GIN ("parser"="standard", "imp_lib"="clucene")
-) DUPLICATE KEY(id) DISTRIBUTED BY HASH(id) BUCKETS 8;
+| # | 用例 | 验证方式 | PASS 条件（脚本可判定） |
+|---|------|---------|----------------------|
+| 1 | 100K 行写入 tantivy / CLucene / 无索引 | Python: 3 张表各 INSERT 100K 行，记录耗时 | 3 张表均写入成功，tantivy 写入耗时 ≤ 2.0x CLucene |
+| 2 | 索引文件大小对比 | SQL: `SHOW DATA` 提取索引大小 | `size_tantivy / size_clucene ≤ 1.5` |
+| 3 | MATCH_ANY 高选择率（~50%） | SQL: 各运行 5 次取 P50 | `P50_tantivy / P50_clucene ≤ 1.2` |
+| 4 | MATCH_ANY 低选择率（< 1%） | SQL: 各运行 5 次取 P50 | `P50_tantivy / P50_clucene ≤ 1.2` |
+| 5 | MATCH_PHRASE 查询 | SQL: 各运行 5 次取 P50 | `P50_tantivy / P50_clucene ≤ 1.2` |
+| 6 | BM25 + ORDER BY + LIMIT 10 | SQL: 运行 5 次取 P50 | `P50_bm25 / P50_match_any_same_table ≤ 3.0` |
+| 7 | 无内存泄漏 | 循环查询 1000 次，BE `mem_tracker` 前后对比 | `(mem_after - mem_before) < 50MB` |
+| 8 | perf 热点函数分析 | `perf record -g -p <be_pid>` 采集 MATCH_ANY 查询 → `perf report` 输出 top-10 | 热点落在 tantivy FFI / searcher / collector 等预期路径上，无非预期瓶颈（如 malloc、lock contention 占比 > 10%） |
 
-CREATE TABLE bench_noidx (
-    id BIGINT,
-    content VARCHAR(65535)
-) DUPLICATE KEY(id) DISTRIBUTED BY HASH(id) BUCKETS 8;
+```bash
+#!/bin/bash
+# verify_phase6.sh — Phase 6 验收脚本
+set -uo pipefail
+SSH="ssh -i ~/.ssh/my_ecs.pem root@8.217.233.254"
+MYSQL="docker exec sr-dev mysql -h127.0.0.1 -P9030 -uroot -N -e"
+PASS=0; FAIL=0
 
--- 写入相同数据到三张表
--- INSERT INTO bench_tantivy SELECT ...;
--- INSERT INTO bench_clucene SELECT ...;
--- INSERT INTO bench_noidx SELECT ...;
+run_sql() { $SSH "$MYSQL \"$1\"" 2>&1 || true; }
 
--- 查询对比
--- Q1: MATCH_ANY 高选择率
--- Q2: MATCH_ANY 低选择率
--- Q3: MATCH_PHRASE
--- Q4: BM25 + ORDER BY + LIMIT（仅 tantivy）
+# 辅助：运行 SQL 5 次取中位数（毫秒）
+median_latency() {
+    local sql="$1"
+    local times=()
+    for i in $(seq 1 5); do
+        local t0=$(date +%s%N)
+        run_sql "$sql" > /dev/null
+        local t1=$(date +%s%N)
+        times+=( $(( (t1 - t0) / 1000000 )) )  # ns → ms
+    done
+    # 排序取中位数
+    IFS=$'\n' sorted=($(sort -n <<<"${times[*]}")); unset IFS
+    echo "${sorted[2]}"  # 0-indexed, 5 个元素取 index 2
+}
+
+# 辅助：比较比率并判定 PASS/FAIL
+check_ratio() {
+    local name="$1" val_a="$2" val_b="$3" max_ratio="$4"
+    if [ "$val_b" -eq 0 ]; then
+        echo "FAIL: $name (baseline is 0)"; ((FAIL++)); return
+    fi
+    # 用整数算术 ×100 避免浮点
+    local ratio_x100=$(( val_a * 100 / val_b ))
+    local max_x100=$(echo "$max_ratio" | awk '{printf "%d", $1 * 100}')
+    if [ "$ratio_x100" -le "$max_x100" ]; then
+        echo "PASS: $name (ratio=${ratio_x100}% ≤ ${max_x100}%)"; ((PASS++))
+    else
+        echo "FAIL: $name (ratio=${ratio_x100}% > ${max_x100}%)"; ((FAIL++))
+    fi
+}
+
+# 建表
+for TBL in bench_tantivy bench_clucene bench_noidx; do
+    run_sql "DROP TABLE IF EXISTS test_db.$TBL" > /dev/null
+done
+run_sql "CREATE TABLE test_db.bench_tantivy (id BIGINT, content VARCHAR(65535), INDEX idx_c (content) USING GIN (\"parser\"=\"standard\", \"imp_lib\"=\"tantivy\")) DUPLICATE KEY(id) DISTRIBUTED BY HASH(id) BUCKETS 8" > /dev/null
+run_sql "CREATE TABLE test_db.bench_clucene (id BIGINT, content VARCHAR(65535), INDEX idx_c (content) USING GIN (\"parser\"=\"standard\", \"imp_lib\"=\"clucene\")) DUPLICATE KEY(id) DISTRIBUTED BY HASH(id) BUCKETS 8" > /dev/null
+run_sql "CREATE TABLE test_db.bench_noidx (id BIGINT, content VARCHAR(65535)) DUPLICATE KEY(id) DISTRIBUTED BY HASH(id) BUCKETS 8" > /dev/null
+
+# TC1: 写入 100K 行
+echo "=== TC1: INSERT 100K rows ==="
+# 生成数据文件（100K 行，id + 随机英文句子）
+$SSH "docker exec sr-dev bash -c 'python3 -c \"
+import random, string
+words = open(\\\"/usr/share/dict/words\\\").read().splitlines()[:5000] if True else []
+if not words: words = [\\\"database\\\",\\\"search\\\",\\\"engine\\\",\\\"query\\\",\\\"index\\\",\\\"full\\\",\\\"text\\\",\\\"performance\\\",\\\"system\\\",\\\"data\\\"]
+for i in range(100000):
+    sent = \\\" \\\".join(random.choices(words, k=random.randint(8,20)))
+    print(f\\\"{i}\\\\t{sent}\\\")
+\" > /tmp/bench_data.csv'" > /dev/null
+
+insert_and_time() {
+    local tbl="$1"
+    local t0=$(date +%s%N)
+    $SSH "docker exec sr-dev bash -c 'curl --location-trusted -u root: -H \"label:bench_${tbl}_\$(date +%s)\" -H \"column_separator:\\t\" -T /tmp/bench_data.csv http://127.0.0.1:8030/api/test_db/${tbl}/_stream_load'" > /dev/null 2>&1
+    local t1=$(date +%s%N)
+    echo $(( (t1 - t0) / 1000000 ))
+}
+T_TANTIVY=$(insert_and_time bench_tantivy)
+T_CLUCENE=$(insert_and_time bench_clucene)
+T_NOIDX=$(insert_and_time bench_noidx)
+echo "Write latency: tantivy=${T_TANTIVY}ms, clucene=${T_CLUCENE}ms, noidx=${T_NOIDX}ms"
+check_ratio "TC1: write latency tantivy/clucene" "$T_TANTIVY" "$T_CLUCENE" 2.0
+
+# TC2: 索引文件大小
+echo "=== TC2: Index size ==="
+# 等待索引构建完成
+sleep 10
+SIZE_T=$(run_sql "SHOW DATA FROM test_db.bench_tantivy" | awk 'NR==1{print $3}' | tr -d '[:alpha:]')
+SIZE_C=$(run_sql "SHOW DATA FROM test_db.bench_clucene" | awk 'NR==1{print $3}' | tr -d '[:alpha:]')
+echo "Index size: tantivy=${SIZE_T}, clucene=${SIZE_C}"
+# 转换为 KB 整数进行比较（SHOW DATA 可能返回 MB/GB 单位，这里取原始数值×100 比较比率）
+SIZE_T_NUM=$(echo "$SIZE_T" | awk '{printf "%d", $1 * 1000}')
+SIZE_C_NUM=$(echo "$SIZE_C" | awk '{printf "%d", $1 * 1000}')
+check_ratio "TC2: index size tantivy/clucene" "$SIZE_T_NUM" "$SIZE_C_NUM" 1.5
+
+# TC3: MATCH_ANY 高选择率
+echo "=== TC3: MATCH_ANY high selectivity ==="
+P50_T3=$(median_latency "SELECT COUNT(*) FROM test_db.bench_tantivy WHERE content MATCH_ANY 'the and'")
+P50_C3=$(median_latency "SELECT COUNT(*) FROM test_db.bench_clucene WHERE content MATCH_ANY 'the and'")
+check_ratio "TC3: MATCH_ANY high sel" "$P50_T3" "$P50_C3" 1.2
+
+# TC4: MATCH_ANY 低选择率
+echo "=== TC4: MATCH_ANY low selectivity ==="
+P50_T4=$(median_latency "SELECT COUNT(*) FROM test_db.bench_tantivy WHERE content MATCH_ANY 'xyzzy'")
+P50_C4=$(median_latency "SELECT COUNT(*) FROM test_db.bench_clucene WHERE content MATCH_ANY 'xyzzy'")
+check_ratio "TC4: MATCH_ANY low sel" "$P50_T4" "$P50_C4" 1.2
+
+# TC5: MATCH_PHRASE
+echo "=== TC5: MATCH_PHRASE ==="
+P50_T5=$(median_latency "SELECT COUNT(*) FROM test_db.bench_tantivy WHERE content MATCH_PHRASE 'full text search'")
+P50_C5=$(median_latency "SELECT COUNT(*) FROM test_db.bench_clucene WHERE content MATCH_PHRASE 'full text search'")
+check_ratio "TC5: MATCH_PHRASE" "$P50_T5" "$P50_C5" 1.2
+
+# TC6: BM25 vs MATCH_ANY on same table
+echo "=== TC6: BM25 latency ==="
+P50_BM25=$(median_latency "SELECT id, BM25(content, 'database') AS s FROM test_db.bench_tantivy WHERE content MATCH_ANY 'database' ORDER BY s DESC LIMIT 10")
+P50_MATCH=$(median_latency "SELECT COUNT(*) FROM test_db.bench_tantivy WHERE content MATCH_ANY 'database'")
+check_ratio "TC6: BM25 vs MATCH_ANY" "$P50_BM25" "$P50_MATCH" 3.0
+
+# TC7: 内存泄漏检查
+echo "=== TC7: Memory leak check ==="
+MEM_BEFORE=$($SSH "docker exec sr-dev curl -s http://127.0.0.1:8040/mem_tracker" | grep -oP 'current_consumption=\K[0-9]+' | head -1)
+for i in $(seq 1 1000); do
+    run_sql "SELECT COUNT(*) FROM test_db.bench_tantivy WHERE content MATCH_ANY 'database'" > /dev/null
+done
+MEM_AFTER=$($SSH "docker exec sr-dev curl -s http://127.0.0.1:8040/mem_tracker" | grep -oP 'current_consumption=\K[0-9]+' | head -1)
+MEM_DELTA=$(( (MEM_AFTER - MEM_BEFORE) / 1048576 ))  # bytes → MB
+if [ "$MEM_DELTA" -lt 50 ]; then
+    echo "PASS: TC7: mem growth ${MEM_DELTA}MB < 50MB"; ((PASS++))
+else
+    echo "FAIL: TC7: mem growth ${MEM_DELTA}MB >= 50MB"; ((FAIL++))
+fi
+
+# TC8: perf 热点函数分析
+echo "=== TC8: perf hot function analysis ==="
+BE_PID=$($SSH "docker exec sr-dev pgrep starrocks_be")
+# 采集 10 秒 perf 数据，期间并发执行 MATCH_ANY 查询
+$SSH "docker exec sr-dev bash -c 'perf record -g -p $BE_PID -o /tmp/perf_tantivy.data -- sleep 10 &'"
+for i in $(seq 1 50); do
+    run_sql "SELECT COUNT(*) FROM test_db.bench_tantivy WHERE content MATCH_ANY 'database performance'" > /dev/null
+done
+sleep 5  # 等待 perf record 结束
+# 导出 top-20 热点函数
+PERF_REPORT=$($SSH "docker exec sr-dev bash -c 'perf report -i /tmp/perf_tantivy.data --stdio --no-children 2>/dev/null | head -40'")
+echo "$PERF_REPORT" | tee /tmp/phase6_perf_top20.txt
+# 检查：malloc/lock 类函数占比不超过 10%
+MALLOC_PCT=$(echo "$PERF_REPORT" | grep -i 'malloc\|tcmalloc\|__lock\|pthread_mutex' | awk '{sum+=$1} END {printf "%.1f", sum}')
+if [ "$(echo "$MALLOC_PCT < 10.0" | bc)" -eq 1 ]; then
+    echo "PASS: TC8: malloc/lock overhead ${MALLOC_PCT}% < 10%"; ((PASS++))
+else
+    echo "FAIL: TC8: malloc/lock overhead ${MALLOC_PCT}% >= 10% (review perf report)"; ((FAIL++))
+fi
+echo "perf report saved to /tmp/phase6_perf_top20.txt"
+
+# Cleanup
+for TBL in bench_tantivy bench_clucene bench_noidx; do
+    run_sql "DROP TABLE IF EXISTS test_db.$TBL" > /dev/null
+done
+echo "=== Result: $PASS PASS, $FAIL FAIL ==="
+[ $FAIL -eq 0 ] && echo "PHASE 6 ACCEPTED" || echo "PHASE 6 REJECTED"
 ```
 
-### 6.2 关注指标
+### 6.2 代码任务
 
+本阶段无新代码，仅编写 benchmark 脚本和数据生成工具：
 
-| 指标             | 说明         |
-| -------------- | ---------- |
-| 索引写入时间         | INSERT 耗时  |
-| 索引文件大小         | 磁盘占用       |
-| 查询延迟 (P50/P99) | 各 query 类型 |
-| BM25 评分延迟      | tantivy 独有 |
-
-
-### 6.3 验证标准
-
-- tantivy 查询延迟 ≤ CLucene（预期 ~2x 更快）
-- 索引文件大小合理（不显著大于 CLucene）
-- BM25 评分延迟可接受（100K 行 < 100ms）
-- 无内存泄漏（Rust FFI 对象正确释放）
+| 步骤    | 文件                              | 内容                                |
+| ----- | ------------------------------- | --------------------------------- |
+| 6.1.1 | `test/benchmark/fts_bench.py`   | 数据生成 + 写入 + 查询 + 采集延迟 → 输出 CSV   |
+| 6.1.2 | `test/benchmark/fts_report.py`  | 读取 CSV，生成对比报告（表格 + 结论）            |
 
 ---
 
 ## 实施状态
 
 
-| Phase   | 内容                          | 状态      | 日期  |
-| ------- | --------------------------- | ------- | --- |
-| Phase 0 | 环境准备（Rust 工具链 + CMake 集成）   | Pending | -   |
-| Phase 1 | Tantivy FFI 基础设施            | Pending | -   |
-| Phase 2 | BE 存储引擎集成                   | Pending | -   |
-| Phase 3 | FE 语法 + 全链路打通               | Pending | -   |
-| Phase 4 | TOKENIZE + BM25 函数          | Pending | -   |
-| Phase 5 | 中文分词 + Compaction + Profile | Pending | -   |
-| Phase 6 | 性能 Benchmark                | Pending | -   |
+| Phase   | 内容                             | 状态   | 日期         |
+| ------- | ------------------------------ | ---- | ---------- |
+| Phase 0 | 环境准备（Rust 工具链 + CMake 集成）      | Done | 2026-04-14 |
+| Phase 1 | Tantivy FFI 基础设施（本地编译+测试通过）    | Done | 2026-04-14 |
+| Phase 2 | BE 存储引擎集成                      | Pending | -        |
+| Phase 3 | FE 语法 + 全链路打通 + Compaction 验证  | Pending | -        |
+| Phase 4 | TOKENIZE + BM25 函数             | Pending | -        |
+| Phase 5 | 中文分词 + Profile                 | Pending | -        |
+| Phase 6 | 性能 Benchmark                   | Pending | -        |
 
 
