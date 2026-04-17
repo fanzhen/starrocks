@@ -189,6 +189,8 @@ void OlapChunkSource::_init_counter(RuntimeState* state) {
             ADD_CHILD_COUNTER(_runtime_profile, "GinNGramFilteredDictNum", TUnit::UNIT, gin_filter_name);
     _gin_predicate_dict_filtered_counter =
             ADD_CHILD_COUNTER(_runtime_profile, "GinPredicateFilteredDictNum", TUnit::UNIT, gin_filter_name);
+    _tantivy_query_timer = ADD_CHILD_TIMER(_runtime_profile, "TantivyQueryTime", gin_filter_name);
+    _tantivy_matched_counter = ADD_CHILD_COUNTER(_runtime_profile, "TantivyMatchedRows", TUnit::UNIT, gin_filter_name);
 
     _seg_zm_filtered_counter =
             ADD_CHILD_COUNTER_SKIP_MIN_MAX(_runtime_profile, "SegmentZoneMapFilterRows", TUnit::UNIT,
@@ -821,6 +823,8 @@ void OlapChunkSource::_update_counter() {
     COUNTER_UPDATE(_gin_ngram_dict_counter, _reader->stats().gin_ngram_dict_count);
     COUNTER_UPDATE(_gin_ngram_dict_filtered_counter, _reader->stats().gin_ngram_dict_filtered);
     COUNTER_UPDATE(_gin_predicate_dict_filtered_counter, _reader->stats().gin_predicate_dict_filtered);
+    COUNTER_UPDATE(_tantivy_query_timer, _reader->stats().tantivy_query_ns);
+    COUNTER_UPDATE(_tantivy_matched_counter, _reader->stats().rows_tantivy_matched);
 
     COUNTER_UPDATE(_rowsets_read_count, _reader->stats().rowsets_read_count);
     COUNTER_UPDATE(_segments_read_count, _reader->stats().segments_read_count);

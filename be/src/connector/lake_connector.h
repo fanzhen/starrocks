@@ -191,6 +191,8 @@ private:
     RuntimeProfile::Counter* _gin_ngram_dict_counter = nullptr;
     RuntimeProfile::Counter* _gin_ngram_dict_filtered_counter = nullptr;
     RuntimeProfile::Counter* _gin_predicate_dict_filtered_counter = nullptr;
+    RuntimeProfile::Counter* _tantivy_query_timer = nullptr;
+    RuntimeProfile::Counter* _tantivy_matched_counter = nullptr;
 
     RuntimeProfile::Counter* _pushdown_predicates_counter = nullptr;
     RuntimeProfile::Counter* _non_pushdown_predicates_counter = nullptr;

@@ -257,6 +257,8 @@ private:
     RuntimeProfile::Counter* _gin_ngram_dict_counter = nullptr;
     RuntimeProfile::Counter* _gin_ngram_dict_filtered_counter = nullptr;
     RuntimeProfile::Counter* _gin_predicate_dict_filtered_counter = nullptr;
+    RuntimeProfile::Counter* _tantivy_query_timer = nullptr;
+    RuntimeProfile::Counter* _tantivy_matched_counter = nullptr;
 
     RuntimeProfile::Counter* _get_row_ranges_by_vector_index_timer = nullptr;
     RuntimeProfile::Counter* _vector_search_timer = nullptr;

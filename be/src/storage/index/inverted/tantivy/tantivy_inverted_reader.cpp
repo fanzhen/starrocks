@@ -19,8 +19,10 @@
 #include "base/string/faststring.h"
 #include "base/string/slice.h"
 #include "common/logging.h"
+#include "common/runtime_profile.h"
 #include "storage/index/inverted/inverted_index_iterator.h"
 #include "storage/index/inverted/tantivy_ffi/tantivy_ffi.h"
+#include "storage/olap_common.h"
 #include "storage/rowset/options.h"
 #include "types/logical_type.h"
 
@@ -72,10 +74,10 @@ Status TantivyInvertedReader::_ensure_reader_opened() {
 Status TantivyInvertedReader::query(OlapReaderStatistics* stats, const std::string& column_name,
                                     const void* query_value, InvertedIndexQueryType query_type,
                                     roaring::Roaring* bit_map) {
+    SCOPED_RAW_TIMER(&stats->tantivy_query_ns);
     RETURN_IF_ERROR(_ensure_reader_opened());
 
     const auto* search_query = reinterpret_cast<const Slice*>(query_value);
-    // Slice data is not guaranteed to be null-terminated
     std::string query_str(search_query->data, search_query->size);
 
     VLOG(2) << "Tantivy query: column=" << column_name << " query=" << query_str
@@ -163,6 +165,7 @@ Status TantivyInvertedReader::query(OlapReaderStatistics* stats, const std::stri
     tantivy_bitmap_destroy(result);
 
     bit_map->swap(roaring_result);
+    stats->rows_tantivy_matched += count;
     return Status::OK();
 }
 

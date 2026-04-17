@@ -493,7 +493,7 @@ echo "=== Result: $PASS PASS, $FAIL FAIL ==="
 
 ### 5.1 目标与验收标准
 
-用户通过 mysql 客户端可以：对中文文本建立 tantivy 索引（parser=chinese），执行中文 MATCH_ANY/PHRASE/BM25 查询。查询 Profile 中可观测到 TantivyQueryTime / TantivyQueryRows 指标。
+用户通过 mysql 客户端可以：对中文文本建立 tantivy 索引（parser=chinese），执行中文 MATCH_ANY/PHRASE/BM25 查询。查询 Profile 中可观测到 TantivyQueryTime / TantivyMatchedRows 指标。
 
 > Compaction 正确性已在 Phase 3 中验证，本阶段不重复。
 
@@ -505,7 +505,7 @@ echo "=== Result: $PASS PASS, $FAIL FAIL ==="
 | 2 | 中文 MATCH_PHRASE（短语邻接） | SQL: `content MATCH_PHRASE '实时分析'` | 结果集 = {1} |
 | 3 | 中文 BM25 评分排序 | SQL: `BM25(content, '数据库') ... ORDER BY score DESC` | 返回 score > 0 的行，按分数降序 |
 | 4 | Profile TantivyQueryTime 可见 | SQL: `SET enable_profile=true` → 查询 → FE HTTP `GET /api/profile?query_id=...` | 输出包含 `TantivyQueryTime` |
-| 5 | Profile TantivyQueryRows 可见 | 同上 FE HTTP API | 输出包含 `TantivyQueryRows`，值 > 0 |
+| 5 | Profile TantivyMatchedRows 可见 | 同上 FE HTTP API | 输出包含 `TantivyMatchedRows`，值 > 0 |
 
 > **Profile API 统一约定**: 使用 FE HTTP 接口 `http://<fe_host>:8030/api/profile?query_id=<id>`（FE 端口 8030）。注意不是 BE 端口 8040。如果 FE HTTP 端口不同，按实际部署调整。
 
@@ -572,7 +572,7 @@ echo "Query ID: $QUERY_ID"
 # 使用 FE HTTP API（端口 8030）获取 profile
 PROFILE=$($SSH "docker exec sr-dev curl -s 'http://127.0.0.1:8030/api/profile?query_id=$QUERY_ID'" 2>/dev/null || true)
 check_contains "TC4: TantivyQueryTime in profile" "TantivyQueryTime" "$PROFILE"
-check_contains "TC5: TantivyQueryRows in profile" "TantivyQueryRows" "$PROFILE"
+check_contains "TC5: TantivyMatchedRows in profile" "TantivyMatchedRows" "$PROFILE"
 
 # Cleanup
 run_sql "DROP TABLE IF EXISTS test_db.test_chinese" > /dev/null
@@ -585,7 +585,7 @@ echo "=== Result: $PASS PASS, $FAIL FAIL ==="
 | 步骤    | 文件                             | 内容                                              |
 | ----- | ------------------------------ | ----------------------------------------------- |
 | 5.1.1 | `tantivy_ffi/src/tokenizer.rs` | 确保 jieba 分词器注册 + 中文 E2E                         |
-| 5.1.2 | `segment_iterator.cpp`         | Profile 计数器: TantivyQueryTime, TantivyQueryRows |
+| 5.1.2 | `segment_iterator.cpp`         | Profile 计数器: TantivyQueryTime, TantivyMatchedRows |
 
 ---
 
@@ -782,7 +782,7 @@ echo "=== Result: $PASS PASS, $FAIL FAIL ==="
 | Phase 2 | BE 存储引擎集成                      | Done | 2026-04-17 |
 | Phase 3 | FE 语法 + 全链路打通 + Compaction 验证  | Done | 2026-04-17 |
 | Phase 4 | TOKENIZE + BM25 函数             | Done | 2026-04-17 |
-| Phase 5 | 中文分词 + Profile                 | Pending | -        |
+| Phase 5 | 中文分词 + Profile                 | Done | 2026-04-17 |
 | Phase 6 | 性能 Benchmark                   | Pending | -        |
 
 

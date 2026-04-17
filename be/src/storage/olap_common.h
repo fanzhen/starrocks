@@ -286,6 +286,10 @@ struct OlapReaderStatistics {
     int64_t gin_ngram_dict_filtered = 0;
     int64_t gin_predicate_dict_filtered = 0;
 
+    int64_t tantivy_query_ns = 0;
+    // Number of rows matched (not filtered) by tantivy inverted index queries.
+    int64_t rows_tantivy_matched = 0;
+
     int64_t rowsets_read_count = 0;
     int64_t segments_read_count = 0;
     int64_t total_columns_data_page_count = 0;
