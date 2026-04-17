@@ -779,9 +779,9 @@ echo "=== Result: $PASS PASS, $FAIL FAIL ==="
 | ------- | ------------------------------ | ---- | ---------- |
 | Phase 0 | 环境准备（Rust 工具链 + CMake 集成）      | Done | 2026-04-14 |
 | Phase 1 | Tantivy FFI 基础设施（本地编译+测试通过）    | Done | 2026-04-14 |
-| Phase 2 | BE 存储引擎集成                      | Pending | -        |
-| Phase 3 | FE 语法 + 全链路打通 + Compaction 验证  | Pending | -        |
-| Phase 4 | TOKENIZE + BM25 函数             | Pending | -        |
+| Phase 2 | BE 存储引擎集成                      | Done | 2026-04-17 |
+| Phase 3 | FE 语法 + 全链路打通 + Compaction 验证  | Done | 2026-04-17 |
+| Phase 4 | TOKENIZE + BM25 函数             | Done | 2026-04-17 |
 | Phase 5 | 中文分词 + Profile                 | Pending | -        |
 | Phase 6 | 性能 Benchmark                   | Pending | -        |
 

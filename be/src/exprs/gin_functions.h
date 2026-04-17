@@ -24,6 +24,12 @@ public:
     static Status tokenize_close(FunctionContext* context, FunctionContext::FunctionStateScope scope);
 
     DEFINE_VECTORIZED_FN(tokenize);
+
+    static Status bm25_prepare(FunctionContext* context, FunctionContext::FunctionStateScope scope);
+
+    static Status bm25_close(FunctionContext* context, FunctionContext::FunctionStateScope scope);
+
+    DEFINE_VECTORIZED_FN(bm25);
 };
 
 } // namespace starrocks

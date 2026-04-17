@@ -41,6 +41,7 @@ import com.starrocks.sql.ast.expression.FunctionCallExpr;
 import com.starrocks.sql.ast.expression.GroupingFunctionCallExpr;
 import com.starrocks.sql.ast.expression.IntLiteral;
 import com.starrocks.sql.ast.expression.LimitElement;
+import com.starrocks.sql.ast.expression.MatchExpr;
 import com.starrocks.sql.ast.expression.SlotRef;
 import com.starrocks.sql.ast.expression.UserVariableExpr;
 import com.starrocks.sql.common.StarRocksPlannerException;
@@ -90,6 +91,8 @@ public class SelectAnalyzer {
                 analyzeSelect(selectList, fromRelation, analyzeState, sourceScope);
         Scope outputScope = analyzeState.getOutputScope();
 
+        // BM25 validation moved below after ORDER BY and HAVING analysis (see validateBm25RequiresMatch call)
+
         List<Expr> groupByExpressions = new ArrayList<>(
                 analyzeGroupBy(groupByClause, analyzeState, sourceScope, outputScope, outputExpressions));
 
@@ -113,6 +116,11 @@ public class SelectAnalyzer {
                 analyzeOrderBy(sortClause, analyzeState, sourceAndOutputScope, outputExpressions, selectList.isDistinct());
         List<Expr> orderByExpressions =
                 orderByElements.stream().map(OrderByElement::getExpr).collect(Collectors.toList());
+
+        // BM25 function requires a MATCH predicate in the WHERE clause.
+        // Check SELECT, ORDER BY, and HAVING expressions.
+        validateBm25RequiresMatch(outputExpressions, orderByExpressions,
+                havingClause != null ? analyzeState.getHaving() : null, whereClause);
 
         analyzeGroupingOperations(analyzeState, groupByClause, outputExpressions);
 
@@ -469,6 +477,52 @@ public class SelectAnalyzer {
             orderByWindowFunctions.addAll(window);
         }
         analyzeState.setOrderByAnalytic(orderByWindowFunctions);
+    }
+
+    /**
+     * BM25() function requires a MATCH predicate (MATCH_ANY/MATCH_ALL/MATCH_PHRASE/etc.)
+     * in the WHERE clause. Without MATCH, we cannot compute meaningful BM25 scores.
+     */
+    private void validateBm25RequiresMatch(List<Expr> outputExpressions, List<Expr> orderByExpressions,
+                                              Expr havingExpr, Expr whereClause) {
+        boolean hasBm25 = outputExpressions.stream().anyMatch(expr -> containsBm25(expr))
+                || orderByExpressions.stream().anyMatch(expr -> containsBm25(expr))
+                || (havingExpr != null && containsBm25(havingExpr));
+        if (!hasBm25) {
+            return;
+        }
+        boolean hasMatch = whereClause != null && containsMatchExpr(whereClause);
+        if (!hasMatch) {
+            throw new SemanticException(
+                    "BM25() function requires a MATCH predicate (MATCH_ANY, MATCH_ALL, MATCH_PHRASE, etc.) " +
+                            "in the WHERE clause");
+        }
+    }
+
+    private boolean containsBm25(Expr expr) {
+        if (expr instanceof FunctionCallExpr) {
+            if ("bm25".equalsIgnoreCase(((FunctionCallExpr) expr).getFunctionName())) {
+                return true;
+            }
+        }
+        for (Expr child : expr.getChildren()) {
+            if (containsBm25(child)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean containsMatchExpr(Expr expr) {
+        if (expr instanceof MatchExpr) {
+            return true;
+        }
+        for (Expr child : expr.getChildren()) {
+            if (containsMatchExpr(child)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void analyzeWhere(Expr whereClause, AnalyzeState analyzeState, Scope scope) {

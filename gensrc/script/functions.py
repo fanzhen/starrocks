@@ -1530,6 +1530,8 @@ vectorized_functions = [
 
     # gin functions
     [190000, 'tokenize', True, False, 'ARRAY_VARCHAR', ['VARCHAR', 'VARCHAR'], 'GinFunctions::tokenize', 'GinFunctions::tokenize_prepare', 'GinFunctions::tokenize_close'],
+    [190001, 'bm25', True, False, 'DOUBLE', ['VARCHAR', 'VARCHAR'], 'GinFunctions::bm25', 'GinFunctions::bm25_prepare', 'GinFunctions::bm25_close'],
+    [190002, 'bm25', True, False, 'DOUBLE', ['VARCHAR', 'VARCHAR', 'VARCHAR'], 'GinFunctions::bm25', 'GinFunctions::bm25_prepare', 'GinFunctions::bm25_close'],
 
     # ai functions
     [200000, 'ai_query', True, False, 'VARCHAR', ['VARCHAR', 'JSON'], "AiFunctions::ai_query"]
