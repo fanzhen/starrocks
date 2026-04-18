@@ -338,7 +338,7 @@ enum class InvertedIndexQueryType { ..., MATCH_PHRASE_PREFIX_QUERY=10, MATCH_REG
 - `ExprOpcodeRegistry.java`: 新增 opcode 映射
 - `IndexAnalyzer.java`: tantivy imp_lib 校验
 - `FunctionSet`: 注册 `BM25(VARCHAR, VARCHAR) → DOUBLE` 和 `TOKENIZE(VARCHAR, VARCHAR) → ARRAY<VARCHAR>`
-- `Config.java`: `enable_experimental_tantivy`（默认 false）
+- `Config.java`: `enable_experimental_gin`（默认 false）
 
 ### 5.4 Thrift
 
@@ -364,7 +364,7 @@ enum TExprOpcode { ..., MATCH_PHRASE, MATCH_PHRASE_PREFIX, MATCH_REGEXP }
 | BM25 统计粒度 | Segment 级独立 | V1 简单可行，跨 segment 近似可接受 |
 | 评分接口 | `BM25(col, query)` 显式函数 | 语义清晰，支持多列评分叠加 |
 | 与 CLucene 关系 | V1 共存，通过 `imp_lib` 选择；长期替代 | 渐进路线，不破坏现有功能 |
-| 灰度控制 | FE Config + table property + session var 三层 | `enable_experimental_tantivy` 全局门控 |
+| 灰度控制 | FE Config + table property + session var 三层 | `enable_experimental_gin` 全局门控 |
 
 ---
 
@@ -380,7 +380,7 @@ enum TExprOpcode { ..., MATCH_PHRASE, MATCH_PHRASE_PREFIX, MATCH_REGEXP }
 | `fe/fe-core/.../sql/expression/ExprOpcodeRegistry.java` | 新增 opcode 映射 |
 | `fe/fe-core/.../sql/analyzer/IndexAnalyzer.java` | tantivy imp_lib 校验 |
 | `fe/fe-core/.../common/InvertedIndexParams.java` | TANTIVY 枚举 |
-| `fe/fe-core/.../common/Config.java` | `enable_experimental_tantivy` |
+| `fe/fe-core/.../common/Config.java` | `enable_experimental_gin` |
 
 ### BE
 

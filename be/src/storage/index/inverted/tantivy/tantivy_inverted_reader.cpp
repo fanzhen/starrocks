@@ -20,6 +20,9 @@
 #include "base/string/slice.h"
 #include "common/logging.h"
 #include "common/runtime_profile.h"
+#include "fs/fs.h"
+#include "fs/fs_util.h"
+#include "storage/index/inverted/inverted_index_common.h"
 #include "storage/index/inverted/inverted_index_iterator.h"
 #include "storage/index/inverted/tantivy_ffi/tantivy_ffi.h"
 #include "storage/olap_common.h"
@@ -61,12 +64,19 @@ Status TantivyInvertedReader::_ensure_reader_opened() {
     if (_reader != nullptr) {
         return Status::OK();
     }
+    if (_degraded) {
+        return Status::OK();
+    }
     if (!index_exists(_index_path)) {
-        return Status::NotFound(fmt::format("Tantivy index path not found: {}", _index_path));
+        LOG(WARNING) << "Tantivy index not found, degrading to full scan: " << _index_path;
+        _degraded = true;
+        return Status::OK();
     }
     _reader = tantivy_reader_open(_index_path.c_str());
     if (_reader == nullptr) {
-        return Status::InternalError(fmt::format("Failed to open tantivy reader at: {}", _index_path));
+        LOG(WARNING) << "Failed to open tantivy reader, degrading to full scan: " << _index_path;
+        _degraded = true;
+        return Status::OK();
     }
     return Status::OK();
 }
@@ -77,15 +87,22 @@ Status TantivyInvertedReader::query(OlapReaderStatistics* stats, const std::stri
     SCOPED_RAW_TIMER(&stats->tantivy_query_ns);
     RETURN_IF_ERROR(_ensure_reader_opened());
 
+    if (_degraded) {
+        // Index corrupted or missing. MATCH predicates have no row-level evaluation fallback,
+        // so the query will fail. Log a clear message for diagnosis.
+        return Status::InternalError(
+                fmt::format("Tantivy index is corrupted or missing at {}, cannot evaluate MATCH predicate. "
+                            "Consider rebuilding the index via ALTER TABLE ... ALTER INDEX.",
+                            _index_path));
+    }
+
     const auto* search_query = reinterpret_cast<const Slice*>(query_value);
     std::string query_str(search_query->data, search_query->size);
 
     VLOG(2) << "Tantivy query: column=" << column_name << " query=" << query_str
             << " type=" << static_cast<int>(query_type);
 
-    // Each column's tantivy index lives in its own directory with a single field named "content".
-    // The column_name parameter identifies the StarRocks column but the tantivy field is always "content".
-    static const char* kTantivyFieldName = "content";
+    const char* kTantivyFieldName = TANTIVY_FIELD_NAME.c_str();
 
     TantivyBitmap* result = nullptr;
     switch (query_type) {
@@ -150,9 +167,13 @@ Status TantivyInvertedReader::query(OlapReaderStatistics* stats, const std::stri
     }
 
     if (result == nullptr) {
+        // FFI returned null — could be user input error (e.g. invalid regex) or index issue.
+        // Do NOT set _degraded here: this may be a transient/user error, not index corruption.
+        // Index-level corruption is already caught by _ensure_reader_opened().
         LOG(WARNING) << "Tantivy query returned null: path=" << _index_path << " query=" << query_str
                      << " type=" << static_cast<int>(query_type);
-        return Status::InternalError("Tantivy query returned null result");
+        return Status::InternalError(
+                fmt::format("Tantivy query failed for query '{}' (type={})", query_str, static_cast<int>(query_type)));
     }
 
     // Convert TantivyBitmap to roaring::Roaring
@@ -171,27 +192,31 @@ Status TantivyInvertedReader::query(OlapReaderStatistics* stats, const std::stri
 
 Status TantivyInvertedReader::query_null(OlapReaderStatistics* stats, const std::string& column_name,
                                          roaring::Roaring* bit_map) {
+    RETURN_IF_ERROR(_ensure_reader_opened());
+
+    if (_degraded) {
+        return Status::InternalError(
+                fmt::format("Tantivy index is corrupted or missing at {}, cannot evaluate IS NULL predicate. "
+                            "Consider rebuilding the index via ALTER TABLE ... ALTER INDEX.",
+                            _index_path));
+    }
+
     std::string null_bitmap_path = _index_path + "/null_bitmap";
 
-    FILE* fp = fopen(null_bitmap_path.c_str(), "rb");
-    if (fp == nullptr) {
-        // No null bitmap file means no nulls
+    auto file_or = fs::new_random_access_file(null_bitmap_path);
+    if (!file_or.ok()) {
+        // null_bitmap file not found within a valid index directory means no nulls were written.
+        // This is distinct from the index directory itself being missing (caught by _degraded above).
         *bit_map = roaring::Roaring();
         return Status::OK();
     }
+    auto file = std::move(file_or.value());
 
-    fseek(fp, 0, SEEK_END);
-    size_t file_size = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
+    ASSIGN_OR_RETURN(auto file_size, file->get_size());
 
     faststring buf;
     buf.resize(file_size);
-    size_t read_size = fread(buf.data(), 1, file_size, fp);
-    fclose(fp);
-
-    if (read_size != file_size) {
-        return Status::IOError("Failed to read null bitmap file");
-    }
+    RETURN_IF_ERROR(file->read_at_fully(0, buf.data(), file_size));
 
     *bit_map = roaring::Roaring::read(reinterpret_cast<const char*>(buf.data()), false);
     bit_map->runOptimize();

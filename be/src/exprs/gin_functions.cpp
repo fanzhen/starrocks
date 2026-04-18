@@ -20,6 +20,7 @@
 #include <string>
 #include <unordered_map>
 
+#include "base/utility/defer_op.h"
 #include "column/array_column.h"
 #include "column/column_viewer.h"
 #include "storage/index/inverted/tantivy_ffi/tantivy_ffi.h"
@@ -222,10 +223,12 @@ StatusOr<ColumnPtr> GinFunctions::bm25(FunctionContext* context, const starrocks
                           std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
     std::filesystem::create_directories(tmp_dir);
 
+    // RAII cleanup: remove temp directory on all exit paths (normal + error + exception).
+    DeferOp cleanup([&tmp_dir]() { std::filesystem::remove_all(tmp_dir); });
+
     // Phase 1: Build a temporary tantivy index over all non-null rows in this batch.
     TantivyWriter* writer = tantivy_writer_create(tmp_dir.c_str(), "content", tokenizer_name.c_str());
     if (writer == nullptr) {
-        std::filesystem::remove_all(tmp_dir);
         return Status::InternalError("bm25(): failed to create tantivy writer (dir=" + tmp_dir +
                                      ", tokenizer=" + tokenizer_name + ")");
     }
@@ -244,14 +247,12 @@ StatusOr<ColumnPtr> GinFunctions::bm25(FunctionContext* context, const starrocks
     tantivy_writer_destroy(writer);
 
     if (commit_rc != 0) {
-        std::filesystem::remove_all(tmp_dir);
         return Status::InternalError("bm25(): tantivy writer commit failed (rc=" + std::to_string(commit_rc) + ")");
     }
 
     // Phase 2: Open reader and compute BM25 scores via tantivy_query_bm25().
     TantivyReader* reader = tantivy_reader_open(tmp_dir.c_str());
     if (reader == nullptr) {
-        std::filesystem::remove_all(tmp_dir);
         return Status::InternalError("bm25(): failed to open tantivy reader (dir=" + tmp_dir + ")");
     }
 
@@ -284,9 +285,6 @@ StatusOr<ColumnPtr> GinFunctions::bm25(FunctionContext* context, const starrocks
             null_column->append(0);
         }
     }
-
-    // Cleanup temp index.
-    std::filesystem::remove_all(tmp_dir);
 
     return NullableColumn::create(result_column, null_column);
 }

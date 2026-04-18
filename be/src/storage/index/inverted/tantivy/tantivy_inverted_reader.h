@@ -45,6 +45,7 @@ private:
     Status _ensure_reader_opened();
 
     ::TantivyReader* _reader = nullptr;
+    bool _degraded = false;
 };
 
 } // namespace starrocks

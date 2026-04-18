@@ -46,6 +46,9 @@ const std::string INVERTED_INDEX_PARSER_ENGLISH = "english";
 const std::string INVERTED_INDEX_PARSER_CHINESE = "chinese";
 const std::string LIKE_FN_NAME = "like";
 
+// Tantivy indexes store a single text field per directory; this is the canonical field name.
+const std::string TANTIVY_FIELD_NAME = "content";
+
 const std::string INVERTED_INDEX_DICT_GRAM_NUM_KEY = "dict_gram_num";
 
 const std::string INVERTED_INDEX_TOKENIZED_KEY = "tokenized";

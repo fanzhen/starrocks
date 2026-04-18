@@ -19,6 +19,9 @@
 #include "base/string/faststring.h"
 #include "base/string/slice.h"
 #include "common/logging.h"
+#include "fs/fs.h"
+#include "fs/fs_util.h"
+#include "storage/index/inverted/inverted_index_common.h"
 #include "storage/index/inverted/inverted_index_option.h"
 #include "storage/index/inverted/tantivy_ffi/tantivy_ffi.h"
 #include "types/logical_type.h"
@@ -55,10 +58,7 @@ Status TantivyInvertedWriter::init() {
 
     std::string parser_str = get_parser_string_from_properties(_tablet_index->index_properties());
 
-    // Each column's tantivy index lives in its own directory with a single field named "content".
-    // The actual StarRocks column name is not needed here because directory-level isolation
-    // ensures no ambiguity. The FFI schema registers exactly one text field per index.
-    _writer = tantivy_writer_create(_directory.c_str(), "content", parser_str.c_str());
+    _writer = tantivy_writer_create(_directory.c_str(), TANTIVY_FIELD_NAME.c_str(), parser_str.c_str());
     if (_writer == nullptr) {
         return Status::InternalError("Failed to create tantivy writer");
     }
@@ -98,23 +98,17 @@ Status TantivyInvertedWriter::finish(WritableFile* wfile, ColumnMetaPB* meta) {
     tantivy_writer_destroy(_writer);
     _writer = nullptr;
 
-    // Write null bitmap to a file in the index directory
+    // Write null bitmap to a file in the index directory using FileSystem API.
     _null_bitmap.runOptimize();
     size_t bitmap_size = _null_bitmap.getSizeInBytes(false);
     if (bitmap_size > 0) {
         std::string null_bitmap_path = _directory + "/null_bitmap";
-        FILE* fp = fopen(null_bitmap_path.c_str(), "wb");
-        if (fp == nullptr) {
-            return Status::IOError(fmt::format("Failed to create null bitmap file: {}", null_bitmap_path));
-        }
+        ASSIGN_OR_RETURN(auto bitmap_file, fs::new_writable_file(null_bitmap_path));
         faststring buf;
         buf.resize(bitmap_size);
         _null_bitmap.write(reinterpret_cast<char*>(buf.data()), false);
-        size_t written = fwrite(buf.data(), 1, bitmap_size, fp);
-        fclose(fp);
-        if (written != bitmap_size) {
-            return Status::IOError("Failed to write null bitmap");
-        }
+        RETURN_IF_ERROR(bitmap_file->append(Slice(buf.data(), bitmap_size)));
+        RETURN_IF_ERROR(bitmap_file->close());
     }
 
     return Status::OK();

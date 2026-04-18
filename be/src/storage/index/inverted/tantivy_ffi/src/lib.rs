@@ -273,11 +273,15 @@ pub unsafe extern "C" fn tantivy_query_bm25(
     };
     let r = &*r;
 
-    match r.inner.query_bm25(field, query, query_type, limit) {
-        Ok(entries) => Box::into_raw(Box::new(TantivyScoreResult {
+    // catch_unwind prevents Rust panics from unwinding across FFI boundary
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        r.inner.query_bm25(field, query, query_type, limit)
+    }));
+    match result {
+        Ok(Ok(entries)) => Box::into_raw(Box::new(TantivyScoreResult {
             inner: reader::TantivyScoreResultInner { entries },
         })),
-        Err(_) => std::ptr::null_mut(),
+        Ok(Err(_)) | Err(_) => std::ptr::null_mut(),
     }
 }
 
@@ -338,15 +342,19 @@ pub unsafe extern "C" fn tantivy_tokenize(
         None => return std::ptr::null_mut(),
     };
 
-    match tokenizer::tokenize_text(text, tokenizer_name) {
-        Ok(tokens) => {
+    // catch_unwind prevents Rust panics from unwinding across FFI boundary
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        tokenizer::tokenize_text(text, tokenizer_name)
+    }));
+    match result {
+        Ok(Ok(tokens)) => {
             let c_tokens: Vec<CString> = tokens
                 .into_iter()
                 .filter_map(|t| CString::new(t).ok())
                 .collect();
             Box::into_raw(Box::new(TantivyTokens { tokens: c_tokens }))
         }
-        Err(_) => std::ptr::null_mut(),
+        Ok(Err(_)) | Err(_) => std::ptr::null_mut(),
     }
 }
 
