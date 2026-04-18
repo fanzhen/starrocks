@@ -1,13 +1,67 @@
 use std::path::Path;
-use tantivy::collector::{DocSetCollector, TopDocs};
+use tantivy::collector::TopDocs;
+use tantivy::columnar::Column;
 use tantivy::query::{
     BooleanQuery, Occur, PhrasePrefixQuery, PhraseQuery, RegexQuery,
     TermQuery,
 };
-use tantivy::schema::{IndexRecordOption, Value};
-use tantivy::{DocAddress, Index, IndexReader, ReloadPolicy, Term};
+use tantivy::schema::IndexRecordOption;
+use tantivy::{Index, IndexReader, ReloadPolicy, Term};
 
 use crate::tokenizer::create_tokenizer_manager;
+
+/// A collector that directly extracts row_ids from fast fields during collection,
+/// avoiding the overhead of DocSetCollector's HashSet<DocAddress>.
+struct RowIdCollector;
+
+struct RowIdSegmentCollector {
+    row_id_column: Column<u64>,
+    row_ids: Vec<u32>,
+}
+
+impl tantivy::collector::Collector for RowIdCollector {
+    type Fruit = Vec<Vec<u32>>;
+    type Child = RowIdSegmentCollector;
+
+    fn for_segment(
+        &self,
+        _segment_local_id: tantivy::SegmentOrdinal,
+        segment_reader: &tantivy::SegmentReader,
+    ) -> tantivy::Result<Self::Child> {
+        let row_id_column = segment_reader
+            .fast_fields()
+            .u64("_row_id")
+            .map_err(|e| tantivy::TantivyError::SchemaError(format!(
+                "Failed to get _row_id fast field: {}", e
+            )))?;
+        Ok(RowIdSegmentCollector {
+            row_id_column,
+            row_ids: Vec::new(),
+        })
+    }
+
+    fn requires_scoring(&self) -> bool {
+        false
+    }
+
+    fn merge_fruits(&self, segment_fruits: Vec<Vec<u32>>) -> tantivy::Result<Vec<Vec<u32>>> {
+        Ok(segment_fruits)
+    }
+}
+
+impl tantivy::collector::SegmentCollector for RowIdSegmentCollector {
+    type Fruit = Vec<u32>;
+
+    fn collect(&mut self, doc_id: tantivy::DocId, _score: tantivy::Score) {
+        if let Some(rid) = self.row_id_column.values_for_doc(doc_id).next() {
+            self.row_ids.push(rid as u32);
+        }
+    }
+
+    fn harvest(self) -> Self::Fruit {
+        self.row_ids
+    }
+}
 
 /// Default upper bound for BM25 "unlimited" queries to prevent OOM.
 const BM25_MAX_LIMIT: usize = 10_000;
@@ -84,37 +138,34 @@ impl TantivyReaderInner {
         Ok(tokens)
     }
 
-    /// Extract row_id from a doc address.
-    fn get_row_id(&self, doc_addr: DocAddress) -> Result<Option<u32>, String> {
-        let searcher = self.reader.searcher();
-        let schema = self.index.schema();
-        let row_id_field = schema
-            .get_field("_row_id")
-            .map_err(|_| "Row ID field not found".to_string())?;
-
-        let doc: tantivy::TantivyDocument = searcher
-            .doc(doc_addr)
-            .map_err(|e| format!("Failed to retrieve doc: {}", e))?;
-
-        Ok(doc.get_first(row_id_field).and_then(|v| v.as_u64()).map(|r| r as u32))
+    /// Get the fast field column for _row_id from a segment reader.
+    fn get_row_id_fast_field(
+        &self,
+        segment_reader: &tantivy::SegmentReader,
+    ) -> Result<Column<u64>, String> {
+        let fast_fields = segment_reader.fast_fields();
+        fast_fields
+            .u64("_row_id")
+            .map_err(|e| format!("Failed to get _row_id fast field: {}", e))
     }
 
-    /// Collect all matching row_ids using DocSetCollector (no scoring, no heap).
+    /// Collect all matching row_ids using custom RowIdCollector (extracts row_ids during search,
+    /// avoiding DocSetCollector's HashSet overhead and post-search store decompression).
     fn collect_row_ids(
         &self,
         query: Box<dyn tantivy::query::Query>,
     ) -> Result<Vec<u32>, String> {
         let searcher = self.reader.searcher();
 
-        let doc_set = searcher
-            .search(&query, &DocSetCollector)
+        let segment_results = searcher
+            .search(&query, &RowIdCollector)
             .map_err(|e| format!("Search failed: {}", e))?;
 
-        let mut row_ids = Vec::with_capacity(doc_set.len());
-        for doc_addr in doc_set {
-            if let Some(rid) = self.get_row_id(doc_addr)? {
-                row_ids.push(rid);
-            }
+        // Flatten segment results and sort
+        let total: usize = segment_results.iter().map(|v| v.len()).sum();
+        let mut row_ids = Vec::with_capacity(total);
+        for seg_ids in segment_results {
+            row_ids.extend(seg_ids);
         }
         row_ids.sort_unstable();
         Ok(row_ids)
@@ -354,16 +405,31 @@ impl TantivyReaderInner {
         };
 
         let searcher = self.reader.searcher();
+        let num_segments = searcher.segment_readers().len();
         let top_docs = searcher
             .search(&query, &TopDocs::with_limit(actual_limit))
             .map_err(|e| format!("BM25 search failed: {}", e))?;
 
         let mut results = Vec::with_capacity(top_docs.len());
-        for (score, doc_addr) in top_docs {
-            if let Some(rid) = self.get_row_id(doc_addr)? {
-                results.push((rid, score));
+
+        // Pre-allocate fast field readers for all segments (indexed by segment_ord)
+        let mut fast_fields: Vec<Option<Column<u64>>> = Vec::with_capacity(num_segments);
+        for i in 0..num_segments {
+            let segment_reader = searcher.segment_reader(i as u32);
+            fast_fields.push(Some(self.get_row_id_fast_field(segment_reader)?));
+        }
+
+        for (score, doc_addr) in &top_docs {
+            let seg = doc_addr.segment_ord as usize;
+            if let Some(ref col) = fast_fields[seg] {
+                if let Some(rid) = col.values_for_doc(doc_addr.doc_id).next() {
+                    results.push((rid as u32, *score));
+                }
             }
         }
+
+        // Re-sort by score descending (segment grouping may have reordered)
+        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         Ok(results)
     }
 }

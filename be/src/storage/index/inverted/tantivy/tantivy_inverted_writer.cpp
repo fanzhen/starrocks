@@ -69,9 +69,9 @@ Status TantivyInvertedWriter::init() {
 void TantivyInvertedWriter::add_values(const void* values, size_t count) {
     auto* slices = reinterpret_cast<const Slice*>(values);
     for (size_t i = 0; i < count; ++i) {
-        // Slice data is not guaranteed to be null-terminated, so copy to std::string
-        std::string value(slices[i].data, slices[i].size);
-        tantivy_writer_add_doc(_writer, value.c_str(), _rid);
+        // Use ptr+len FFI to avoid std::string copy for null-termination
+        tantivy_writer_add_doc_with_len(_writer, reinterpret_cast<const uint8_t*>(slices[i].data),
+                                        static_cast<uint32_t>(slices[i].size), _rid);
         _total_bytes += slices[i].size;
         ++_rid;
     }

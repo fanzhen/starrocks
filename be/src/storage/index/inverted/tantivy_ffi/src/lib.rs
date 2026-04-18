@@ -87,6 +87,54 @@ pub unsafe extern "C" fn tantivy_writer_add_doc(
     let _ = w.inner.add_doc(value, row_id);
 }
 
+/// Add a document using ptr+len (no null-termination required).
+#[no_mangle]
+pub unsafe extern "C" fn tantivy_writer_add_doc_with_len(
+    w: *mut TantivyWriter,
+    value: *const u8,
+    len: u32,
+    row_id: u32,
+) {
+    if w.is_null() || value.is_null() {
+        return;
+    }
+    let slice = std::slice::from_raw_parts(value, len as usize);
+    let text = match std::str::from_utf8(slice) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let w = &mut *w;
+    let _ = w.inner.add_doc(text, row_id);
+}
+
+/// Batch add documents using arrays of ptr+len pairs.
+#[no_mangle]
+pub unsafe extern "C" fn tantivy_writer_add_docs(
+    w: *mut TantivyWriter,
+    texts: *const *const u8,
+    lens: *const u32,
+    row_ids: *const u32,
+    count: u32,
+) {
+    if w.is_null() || texts.is_null() || lens.is_null() || row_ids.is_null() || count == 0 {
+        return;
+    }
+    let w = &mut *w;
+    let count = count as usize;
+    for i in 0..count {
+        let ptr = *texts.add(i);
+        let len = *lens.add(i) as usize;
+        let row_id = *row_ids.add(i);
+        if ptr.is_null() {
+            continue;
+        }
+        let slice = std::slice::from_raw_parts(ptr, len);
+        if let Ok(text) = std::str::from_utf8(slice) {
+            let _ = w.inner.add_doc(text, row_id);
+        }
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn tantivy_writer_add_null(w: *mut TantivyWriter, row_id: u32) {
     if w.is_null() {

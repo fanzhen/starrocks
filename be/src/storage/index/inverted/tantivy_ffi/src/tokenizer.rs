@@ -104,10 +104,13 @@ pub fn create_tokenizer_manager() -> TokenizerManager {
     manager
 }
 
+/// Global tokenizer manager — created once, shared across all tokenize calls.
+static GLOBAL_TOKENIZER_MANAGER: LazyLock<TokenizerManager> =
+    LazyLock::new(|| create_tokenizer_manager());
+
 /// Tokenize text using the specified tokenizer, returning a Vec of token strings.
 pub fn tokenize_text(text: &str, tokenizer_name: &str) -> Result<Vec<String>, String> {
-    let manager = create_tokenizer_manager();
-    let mut tokenizer = manager
+    let mut tokenizer = GLOBAL_TOKENIZER_MANAGER
         .get(tokenizer_name)
         .ok_or_else(|| format!("Unknown tokenizer: {}", tokenizer_name))?;
 

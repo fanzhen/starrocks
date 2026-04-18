@@ -41,6 +41,23 @@ struct TantivyWriter *tantivy_writer_create(const char *index_dir,
 
 void tantivy_writer_add_doc(struct TantivyWriter *w, const char *value, uint32_t row_id);
 
+/**
+ * Add a document using ptr+len (no null-termination required).
+ */
+void tantivy_writer_add_doc_with_len(struct TantivyWriter *w,
+                                     const uint8_t *value,
+                                     uint32_t len,
+                                     uint32_t row_id);
+
+/**
+ * Batch add documents using arrays of ptr+len pairs.
+ */
+void tantivy_writer_add_docs(struct TantivyWriter *w,
+                             const uint8_t *const *texts,
+                             const uint32_t *lens,
+                             const uint32_t *row_ids,
+                             uint32_t count);
+
 void tantivy_writer_add_null(struct TantivyWriter *w, uint32_t row_id);
 
 /**

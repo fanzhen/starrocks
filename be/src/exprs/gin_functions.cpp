@@ -238,8 +238,8 @@ StatusOr<ColumnPtr> GinFunctions::bm25(FunctionContext* context, const starrocks
             tantivy_writer_add_null(writer, static_cast<uint32_t>(row));
         } else {
             auto data = text_viewer.value(row);
-            std::string text(data.data, data.size);
-            tantivy_writer_add_doc(writer, text.c_str(), static_cast<uint32_t>(row));
+            tantivy_writer_add_doc_with_len(writer, reinterpret_cast<const uint8_t*>(data.data),
+                                            static_cast<uint32_t>(data.size), static_cast<uint32_t>(row));
         }
     }
 

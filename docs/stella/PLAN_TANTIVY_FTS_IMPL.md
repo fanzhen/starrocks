@@ -786,7 +786,7 @@ echo "=== Result: $PASS PASS, $FAIL FAIL ==="
 | Phase 6 | 性能 Benchmark                   | Done | 2026-04-17 |
 | 代码审查修复 | FFI 安全性 + 代码质量                  | Done | 2026-04-18 |
 | Phase 7 | 可靠性加固（P0）                      | Done | 2026-04-18 |
-| Phase 8 | FFI 性能优化（P1）                   | TODO | —          |
+| Phase 8 | FFI 性能优化（P1）                   | Done | 2026-04-19 |
 | Phase 9 | BM25 持久化索引（P1）                 | TODO | —          |
 
 ### 代码审查修复详情（2026-04-18）
@@ -834,8 +834,8 @@ echo "=== Result: $PASS PASS, $FAIL FAIL ==="
 | BM25 query_type 硬编码 OR | 低 | Phase 9 解决 | `bm25()` 始终使用 OR 评分，MATCH_ALL 场景下评分语义不完全匹配 |
 | null_bitmap 使用 fopen 而非 StarRocks 文件抽象 | 中 | ✅ Phase 7 已解决 | 已改用 `WritableFile` / `RandomAccessFile` API |
 | tantivy index 损坏无降级策略 | 中 | ✅ Phase 7 已解决 | `_degraded` 标记 + 诊断错误信息 |
-| `tokenize_text` 每次创建 TokenizerManager | 低 | Phase 8 解决 | 性能优化方向，jieba 已全局缓存，实际开销极小 |
-| Writer 逐行 FFI 调用 + String 拷贝 | 低 | Phase 8 解决 | 写入性能优化 |
+| `tokenize_text` 每次创建 TokenizerManager | 低 | ✅ Phase 8 已解决 | `LazyLock<TokenizerManager>` 全局单例 |
+| Writer 逐行 FFI 调用 + String 拷贝 | 低 | ✅ Phase 8 已解决 | `tantivy_writer_add_doc_with_len()` ptr+len 接口 |
 
 ---
 
@@ -940,6 +940,47 @@ Compaction（horizontal/vertical）读旧 rowset → 合并 → 写新 rowset。
 | 8.4 | `tantivy_ffi/tantivy_ffi.h` | cbindgen 自动更新 C 头文件 |
 | 8.5 | `tantivy_inverted_writer.cpp` | `add_values()` 改用 `tantivy_writer_add_doc_with_len()` 消除 `std::string` 拷贝；批量场景使用 `tantivy_writer_add_docs()` |
 | 8.6 | `gin_functions.cpp` | `bm25()` 的批量写入改用 `tantivy_writer_add_docs()` |
+
+### Phase 8 完成详情（2026-04-19）
+
+**三轮 perf 驱动优化**，在 1M 行数据上将 MATCH_ANY 查询从 1,145ms 优化到 47-50ms：
+
+#### Round 1: Tokenizer 全局单例 + ptr+len FFI
+- `tokenizer.rs`: `LazyLock<TokenizerManager>` 全局单例，消除每次调用创建 `TokenizerManager`
+- `lib.rs`: 新增 `tantivy_writer_add_doc_with_len(ptr, len, row_id)` 和 `tantivy_writer_add_docs()` 批量接口
+- `tantivy_inverted_writer.cpp` + `gin_functions.cpp`: 使用 ptr+len 接口消除 `std::string` 拷贝
+- Commit: `01b97e7`
+
+#### Round 2: Fast Field row_id 查找（关键优化）
+- **Perf 发现**: `Decompressor::decompress` 占 59.47%！`collect_row_ids()` 对每个匹配文档调用 `searcher.doc()` 从压缩 store 读取完整文档，仅为提取 `_row_id` 字段
+- **修复**: 改用 fast field column reader（O(1) 列式访问），按 segment 分组复用 fast field reader
+- **效果**: TantivyQueryTime 从 1,071ms 降至 38.9ms（**27.5x**），总查询从 1,145ms 降至 106ms (cold) / 82ms (warm)
+- 内存分配: 6.233 GB → 429 MB（**14.5x 减少**）
+- Commit: `fe29e30`
+
+#### Round 3: 自定义 RowIdCollector 消除 HashSet 开销
+- **Perf 发现**: `DocSetCollector` 收集结果到 `HashSet<DocAddress>`，hash 操作占 ~23%
+- **修复**: 实现自定义 `RowIdCollector`（实现 `tantivy::collector::Collector` trait），在搜索过程中直接从 fast field 提取 row_id，跳过 HashSet 和后处理
+- **效果**: 总查询从 82ms 降至 **47-50ms**（warm），cold run 82ms
+- Commit: `ebb66b6`
+
+#### 最终 Perf 热点分析（无异常热点）
+| 函数 | 占比 | 说明 |
+|------|------|------|
+| `quicksort` (row_ids 排序) | 12% | 450K 元素排序，预期开销 |
+| `BinaryPlainPageDecoder` (VARCHAR 读取) | 15% | 读取匹配行数据，I/O 预期开销 |
+| `SparseRange::add` (bitmap 构建) | 6% | 结果转 roaring bitmap，预期开销 |
+| `DocSet::fill_buffer` (posting list 遍历) | 2.5% | tantivy 核心查询引擎，预期开销 |
+| `MonotonicMappingColumn::get_val` (fast field) | 1.8% | row_id fast field 访问，预期开销 |
+
+#### 性能总结
+
+| 指标 | 优化前 | 优化后 | 提升 |
+|------|--------|--------|------|
+| MATCH_ANY 1M 行 | 1,145ms | 47-50ms | **23x** |
+| TantivyQueryTime | 1,071ms | ~14ms | **76x** |
+| 内存分配 | 6.233 GB | 226 MB | **28x** |
+| 峰值内存 | 45 MB | 4.3 MB | **10x** |
 
 ---
 
