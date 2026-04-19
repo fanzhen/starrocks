@@ -115,6 +115,12 @@ public:
 
     VectorSearchOptionPtr vector_search_option = nullptr;
 
+    // BM25 search options
+    std::string bm25_query;
+    int32_t bm25_query_type = 0;
+    std::string bm25_column_name;
+    int32_t bm25_slot_id = -1;
+
     // Data sampling by block-level, which is a core-component of TABLE-SAMPLE feature
     // 1. Regular block smapling: Bernoulli sampling on page-id
     // 2. Partial-Sorted block: leverage data ordering to improve the evenness

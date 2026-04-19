@@ -116,16 +116,19 @@ LIMIT 20;
 
 `BM25(col, query)` 返回 `DOUBLE`，表示该行对该 query 的 BM25 相关性分数。分数越高表示越相关。
 
-**约束**: V1 中 `BM25(col, query)` 要求同一查询块中该列必须有 `MATCH_*` 谓词，否则 Analyzer 报错。原因是无 MATCH 过滤时 BM25 需要全表逐行评分，性能不可控。
+**两种执行路径**:
+- **持久化索引路径**（推荐）：当目标列有 GIN 索引（`imp_lib=tantivy`）且 WHERE 中有 `MATCH_*` 谓词时，`RewriteToBm25PlanRule` 将 `bm25()` 改写为虚拟列 `__bm25_score__`，在 scan 层通过持久化索引计算 segment 级 BM25 分数。IDF 基于整个 segment，跨 batch 分数可比。
+- **Batch-local fallback**：无 GIN 索引或 `imp_lib != tantivy` 时，`bm25()` 作为标量函数执行，每个 batch 创建临时 tantivy 索引计算 BM25。IDF 仅基于当前 batch（4096 行），跨 batch 分数不可比。
+
+**约束**: `MATCH_*` 谓词本身要求目标列有 GIN 索引。因此 `bm25() + MATCH` 组合在无 GIN 索引的表上不可执行。无 MATCH 时 `bm25()` 仍可独立使用（走 batch-local fallback），但结果精度有限。
 
 ```sql
--- 合法：BM25 配合 MATCH 使用
+-- 推荐：BM25 配合 MATCH + GIN 索引 → 持久化索引 BM25
 SELECT id, BM25(content, 'query') AS score
 FROM t WHERE content MATCH_ANY 'query' ORDER BY score DESC LIMIT 10;
 
--- 非法（V1 报错）：BM25 无配套 MATCH
+-- 可用但精度有限：BM25 无 MATCH → batch-local fallback
 SELECT id, BM25(content, 'query') AS score FROM t ORDER BY score DESC LIMIT 10;
--- Error: BM25() requires a MATCH predicate on the same column in WHERE clause
 ```
 
 #### 分词调试
@@ -236,11 +239,23 @@ SELECT WHERE MATCH_* → SegmentIterator::_apply_inverted_index()
   → 与其他谓词的 bitmap 做交/并集 → 只读取匹配行的数据
 ```
 
-**BM25 路径**:
+**BM25 路径（持久化索引，有 GIN + imp_lib=tantivy）**:
 ```
-SELECT BM25(col, query) → BE scalar function
-  → TantivyInvertedReader::query_with_score() → FFI → tantivy BM25 scorer
-  → 每行返回 float score
+SELECT BM25(col, query) WHERE col MATCH_ANY query
+  → FE: RewriteToBm25PlanRule 改写 bm25() 为虚拟列 __bm25_score__
+  → FE: OlapScanNode 序列化 TBm25SearchOptions 到 Thrift
+  → BE: SegmentIterator::_compute_bm25_scores()
+    → InvertedIndexIterator::query_bm25() → FFI → tantivy BM25 scorer
+    → score_map (row_id → float score)
+  → BE: _do_get_next() 中 append_vector_column 输出分数到 chunk
+```
+
+**BM25 路径（batch-local fallback，无 GIN 索引）**:
+```
+SELECT BM25(col, query)
+  → BE scalar function (gin_functions.cpp)
+  → 每 batch 创建临时 tantivy 索引 → commit → reopen → query BM25
+  → 每行返回 float score（IDF 仅基于当前 batch）
 ```
 
 ---

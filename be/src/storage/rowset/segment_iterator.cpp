@@ -311,6 +311,13 @@ private:
         }
     };
 
+    // BM25 scoring context
+    struct Bm25Context {
+        std::unordered_map<rowid_t, float> score_map;
+        int32_t bm25_column_id = -1;
+        SlotId bm25_slot_id = -1;
+    };
+
     Status _init();
     Status _init_internal();
     Status _try_to_update_ranges_by_runtime_filter();
@@ -408,6 +415,8 @@ private:
     Status _init_inverted_index_iterators();
 
     Status _apply_inverted_index();
+
+    Status _compute_bm25_scores();
 
     Status _read(Chunk* chunk, vector<rowid_t>* rowid, size_t n, bool predicate_col_late_materialize_read);
 
@@ -528,6 +537,9 @@ private:
 
     // Inverted index context - only created when needed
     std::unique_ptr<InvertedIndexContext> _inverted_index_ctx;
+
+    // BM25 scoring context - only created when needed
+    std::unique_ptr<Bm25Context> _bm25_ctx;
 
     bool _enable_predicate_col_late_materialize;
 };
@@ -787,6 +799,11 @@ SegmentIterator::SegmentIterator(std::shared_ptr<Segment> segment, Schema schema
                 .elem_type = tenann::PrimitiveType::kFloatType};
 #endif
     }
+    // Initialize BM25 context if BM25 search is requested
+    if (!_opts.bm25_query.empty() && _opts.bm25_slot_id >= 0) {
+        _bm25_ctx = std::make_unique<Bm25Context>();
+        _bm25_ctx->bm25_slot_id = _opts.bm25_slot_id;
+    }
     // For small segment file (the number of rows is less than chunk_size),
     // the segment iterator will reserve a large amount of memory,
     // especially when there are many columns, many small files, many versions,
@@ -892,6 +909,7 @@ Status SegmentIterator::_init_internal() {
     RETURN_IF_ERROR(_get_row_ranges_by_zone_map());
     RETURN_IF_ERROR(_get_row_ranges_by_bloom_filter());
     RETURN_IF_ERROR(_apply_inverted_index());
+    RETURN_IF_ERROR(_compute_bm25_scores());
     if (apply_del_vec_after_all_index_filter) {
         RETURN_IF_ERROR(_apply_del_vector());
     }
@@ -1988,7 +2006,9 @@ Status SegmentIterator::do_get_next(Chunk* chunk) {
     Status st;
     std::vector<uint32_t> rowids;
     std::vector<uint32_t>* p_rowids =
-            (_vector_index_ctx && _vector_index_ctx->always_build_rowid()) ? &rowids : nullptr;
+            ((_vector_index_ctx && _vector_index_ctx->always_build_rowid()) || _bm25_ctx)
+                    ? &rowids
+                    : nullptr;
     do {
         st = _do_get_next(chunk, p_rowids);
     } while (st.ok() && chunk->num_rows() == 0);
@@ -2188,6 +2208,25 @@ Status SegmentIterator::_do_get_next(Chunk* result, vector<rowid_t>* rowid) {
         // TODO: plan vector column in FE Planner
         chunk->append_vector_column(std::move(distance_column), _make_field(_vector_index_ctx->vector_column_id),
                                     _vector_index_ctx->vector_slot_id);
+    }
+
+    // Append BM25 score column — always append when BM25 is active, fill 0 for unscored rows
+    if (_bm25_ctx && rowid != nullptr) {
+        auto score_column = DoubleColumn::create();
+        score_column->reserve(rowid->size());
+        size_t scored_count = 0;
+        for (const auto& rid : *rowid) {
+            auto it = _bm25_ctx->score_map.find(rid);
+            if (it != _bm25_ctx->score_map.end()) {
+                score_column->append(static_cast<double>(it->second));
+                scored_count++;
+            } else {
+                score_column->append(0.0);
+            }
+        }
+        int bm25_col_id = _schema.num_fields();
+        auto bm25_field = std::make_shared<Field>(bm25_col_id, "__bm25_score__", get_type_info(TYPE_DOUBLE), false);
+        chunk->append_vector_column(std::move(score_column), bm25_field, _bm25_ctx->bm25_slot_id);
     }
 
     result->swap_chunk(*chunk);
@@ -3399,6 +3438,69 @@ Status SegmentIterator::_apply_inverted_index() {
     }
 
     _opts.stats->rows_gin_filtered += input_rows - _scan_range.span_size();
+    return Status::OK();
+}
+
+Status SegmentIterator::_compute_bm25_scores() {
+    if (!_bm25_ctx || _opts.bm25_query.empty()) {
+        return Status::OK();
+    }
+    if (_scan_range.empty()) {
+        return Status::OK();
+    }
+    if (!_opts.enable_gin_filter) {
+        return Status::OK();
+    }
+
+    SCOPED_RAW_TIMER(&_opts.stats->bm25_score_ns);
+
+    // Find the column by name in the tablet schema to get unique column id
+    const std::string& col_name = _opts.bm25_column_name;
+    ColumnUID target_ucid = -1;
+    if (_opts.tablet_schema) {
+        for (const auto& col : _opts.tablet_schema->columns()) {
+            if (col.name() == col_name) {
+                target_ucid = col.unique_id();
+                break;
+            }
+        }
+    }
+    if (target_ucid < 0) {
+        // Fallback: try the scan schema
+        for (const auto& field : _schema.fields()) {
+            if (field->name() == col_name) {
+                target_ucid = field->uid();
+                break;
+            }
+        }
+    }
+    if (target_ucid < 0) {
+        return Status::InternalError(fmt::format("BM25: column '{}' not found in tablet schema", col_name));
+    }
+
+    // Create an inverted index iterator for this column (internally checks for GIN index)
+    InvertedIndexIterator* bm25_iter = nullptr;
+    IndexReadOptions index_opts;
+    index_opts.stats = _opts.stats;
+    RETURN_IF_ERROR(_segment->new_inverted_index_iterator(target_ucid, &bm25_iter, _opts, index_opts));
+    if (bm25_iter == nullptr) {
+        return Status::InternalError(fmt::format("BM25: no GIN index found for column '{}'", col_name));
+    }
+    std::unique_ptr<InvertedIndexIterator> bm25_iter_guard(bm25_iter);
+
+    // Query BM25 scores
+    std::vector<std::pair<uint32_t, float>> score_results;
+    int32_t bm25_limit = static_cast<int32_t>(std::min<uint32_t>(_segment->num_rows(), INT32_MAX));
+    RETURN_IF_ERROR(bm25_iter->query_bm25(col_name, _opts.bm25_query, _opts.bm25_query_type,
+                                           bm25_limit, &score_results));
+
+    // Build score map
+    _bm25_ctx->score_map.reserve(score_results.size());
+    for (const auto& [row_id, score] : score_results) {
+        _bm25_ctx->score_map[row_id] = score;
+    }
+
+    _opts.stats->bm25_scored_rows += score_results.size();
     return Status::OK();
 }
 

@@ -102,6 +102,15 @@ Status OlapChunkSource::prepare(RuntimeState* state) {
         _vector_slot_id = vector_search_options.vector_slot_id;
         _params.vector_search_option = std::make_shared<VectorSearchOption>();
     }
+    if (thrift_olap_scan_node.__isset.bm25_search_options) {
+        const auto& bm25_opts = thrift_olap_scan_node.bm25_search_options;
+        if (bm25_opts.__isset.query) {
+            _bm25_query = bm25_opts.query;
+            _bm25_column_name = bm25_opts.__isset.column_name ? bm25_opts.column_name : "";
+            _bm25_query_type = bm25_opts.__isset.query_type ? bm25_opts.query_type : 0;
+            _bm25_slot_id = bm25_opts.__isset.bm25_slot_id ? bm25_opts.bm25_slot_id : -1;
+        }
+    }
     const TupleDescriptor* tuple_desc = state->desc_tbl().get_tuple_descriptor(thrift_olap_scan_node.tuple_id);
     _slots = &tuple_desc->slots();
 
@@ -191,6 +200,8 @@ void OlapChunkSource::_init_counter(RuntimeState* state) {
             ADD_CHILD_COUNTER(_runtime_profile, "GinPredicateFilteredDictNum", TUnit::UNIT, gin_filter_name);
     _tantivy_query_timer = ADD_CHILD_TIMER(_runtime_profile, "TantivyQueryTime", gin_filter_name);
     _tantivy_matched_counter = ADD_CHILD_COUNTER(_runtime_profile, "TantivyMatchedRows", TUnit::UNIT, gin_filter_name);
+    _bm25_score_timer = ADD_CHILD_TIMER(_runtime_profile, "Bm25ScoreTime", gin_filter_name);
+    _bm25_scored_rows_counter = ADD_CHILD_COUNTER(_runtime_profile, "Bm25ScoredRows", TUnit::UNIT, gin_filter_name);
 
     _seg_zm_filtered_counter =
             ADD_CHILD_COUNTER_SKIP_MIN_MAX(_runtime_profile, "SegmentZoneMapFilterRows", TUnit::UNIT,
@@ -280,6 +291,12 @@ Status OlapChunkSource::_init_reader_params(const std::vector<std::unique_ptr<Ol
     }
     if (thrift_olap_scan_node.__isset.enable_gin_filter) {
         _params.enable_gin_filter = thrift_olap_scan_node.enable_gin_filter;
+    }
+    if (!_bm25_query.empty()) {
+        _params.bm25_query = _bm25_query;
+        _params.bm25_query_type = _bm25_query_type;
+        _params.bm25_column_name = _bm25_column_name;
+        _params.bm25_slot_id = _bm25_slot_id;
     }
     _params.use_vector_index = _use_vector_index;
     if (_use_vector_index) {
@@ -372,6 +389,9 @@ Status OlapChunkSource::_init_scanner_columns(std::vector<uint32_t>& scanner_col
             index = _tablet_schema->num_columns();
             _params.vector_search_option->vector_column_id = index;
             _params.vector_search_option->vector_slot_id = slot->id();
+        } else if (!_bm25_query.empty() && slot->id() == _bm25_slot_id) {
+            // BM25 virtual column — assign a column ID beyond real columns
+            index = _tablet_schema->num_columns() + (_use_vector_index ? 1 : 0);
         } else {
             index = _tablet_schema->field_index(slot->col_name());
         }
@@ -653,6 +673,8 @@ Status OlapChunkSource::_init_global_dicts(TabletReaderParams* params) {
             int32_t index;
             if (_use_vector_index && !_use_ivfpq && slot->id() == _vector_slot_id) {
                 index = _tablet_schema->num_columns();
+            } else if (!_bm25_query.empty() && slot->id() == _bm25_slot_id) {
+                index = _tablet_schema->num_columns() + (_use_vector_index ? 1 : 0);
             } else {
                 index = _tablet_schema->field_index(slot->col_name());
             }
@@ -695,8 +717,13 @@ Status OlapChunkSource::_read_chunk_from_storage(RuntimeState* state, Chunk* chu
         TRY_CATCH_ALLOC_SCOPE_START()
 
         for (auto slot : _query_slots) {
+            if (chunk->is_slot_exist(slot->id())) {
+                continue;
+            }
             size_t column_index = chunk->schema()->get_field_index_by_name(slot->col_name());
-            chunk->set_slot_id_to_index(slot->id(), column_index);
+            if (column_index != static_cast<size_t>(-1)) {
+                chunk->set_slot_id_to_index(slot->id(), column_index);
+            }
         }
 
         if (!_non_pushdown_pred_tree.empty()) {
@@ -825,6 +852,8 @@ void OlapChunkSource::_update_counter() {
     COUNTER_UPDATE(_gin_predicate_dict_filtered_counter, _reader->stats().gin_predicate_dict_filtered);
     COUNTER_UPDATE(_tantivy_query_timer, _reader->stats().tantivy_query_ns);
     COUNTER_UPDATE(_tantivy_matched_counter, _reader->stats().rows_tantivy_matched);
+    COUNTER_UPDATE(_bm25_score_timer, _reader->stats().bm25_score_ns);
+    COUNTER_UPDATE(_bm25_scored_rows_counter, _reader->stats().bm25_scored_rows);
 
     COUNTER_UPDATE(_rowsets_read_count, _reader->stats().rowsets_read_count);
     COUNTER_UPDATE(_segments_read_count, _reader->stats().segments_read_count);

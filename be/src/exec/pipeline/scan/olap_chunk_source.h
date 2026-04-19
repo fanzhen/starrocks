@@ -112,6 +112,12 @@ private:
     std::string _vector_distance_column_name;
     SlotId _vector_slot_id;
 
+    // BM25 persistent index options
+    std::string _bm25_query;
+    int32_t _bm25_query_type = 0;
+    std::string _bm25_column_name;
+    int32_t _bm25_slot_id = -1;
+
     std::shared_ptr<starrocks::TableMetrics> _table_metrics;
 
     // The following are profile meatures
@@ -171,6 +177,8 @@ private:
     RuntimeProfile::Counter* _gin_predicate_dict_filtered_counter = nullptr;
     RuntimeProfile::Counter* _tantivy_query_timer = nullptr;
     RuntimeProfile::Counter* _tantivy_matched_counter = nullptr;
+    RuntimeProfile::Counter* _bm25_score_timer = nullptr;
+    RuntimeProfile::Counter* _bm25_scored_rows_counter = nullptr;
 
     // Rows after skip key filter
     RuntimeProfile::Counter* _rows_after_sk_filtered_counter = nullptr;

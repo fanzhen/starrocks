@@ -107,6 +107,12 @@ struct TabletReaderParams {
 
     VectorSearchOptionPtr vector_search_option = nullptr;
 
+    // BM25 search options (set when bm25() is used with GIN index)
+    std::string bm25_query;
+    int32_t bm25_query_type = 0;
+    std::string bm25_column_name;
+    int32_t bm25_slot_id = -1;
+
     TTableSampleOptions sample_options;
     bool enable_join_runtime_filter_pushdown = false;
     bool enable_predicate_col_late_materialize = false;

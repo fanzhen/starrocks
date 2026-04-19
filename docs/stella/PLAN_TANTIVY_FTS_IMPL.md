@@ -324,10 +324,11 @@ check_id "TC6: MATCH_PHRASE id=2" "2" "$R6"
 R7=$(run_sql "SELECT id FROM test_db.test_fts WHERE content MATCH_PHRASE_PREFIX 'search eng'")
 check_id "TC7: MATCH_PHRASE_PREFIX id=5" "5" "$R7"
 
-# TC8: MATCH_REGEXP — 用例表：结果集包含 id=1,3
+# TC8: MATCH_REGEXP — 用例表：结果集包含 id=1,3,4 (term "database" 匹配 id=1,3; term "data" 匹配 id=4)
 R8=$(run_sql "SELECT id FROM test_db.test_fts WHERE content MATCH_REGEXP 'data.*' ORDER BY id")
 check_id "TC8a: MATCH_REGEXP id=1" "1" "$R8"
 check_id "TC8b: MATCH_REGEXP id=3" "3" "$R8"
+check_id "TC8c: MATCH_REGEXP id=4" "4" "$R8"
 
 # TC9: Compaction — 显式触发 + 确认已完成 + 前后对比
 # 9a: 记录 compaction 前的 MATCH_ANY 'database' 行数
@@ -787,7 +788,7 @@ echo "=== Result: $PASS PASS, $FAIL FAIL ==="
 | 代码审查修复 | FFI 安全性 + 代码质量                  | Done | 2026-04-18 |
 | Phase 7 | 可靠性加固（P0）                      | Done | 2026-04-18 |
 | Phase 8 | FFI 性能优化（P1）                   | Done | 2026-04-19 |
-| Phase 9 | BM25 持久化索引（P1）                 | TODO | —          |
+| Phase 9 | BM25 持久化索引（P1）                 | Done | 2026-04-19 |
 
 ### 代码审查修复详情（2026-04-18）
 
@@ -830,12 +831,14 @@ echo "=== Result: $PASS PASS, $FAIL FAIL ==="
 
 | 问题 | 严重度 | 状态 | 说明 |
 |------|--------|------|------|
-| BM25 batch-local IDF | 中 | Phase 9 解决 | 跨 batch BM25 分数不可比，需绑定持久化索引路径 |
-| BM25 query_type 硬编码 OR | 低 | Phase 9 解决 | `bm25()` 始终使用 OR 评分，MATCH_ALL 场景下评分语义不完全匹配 |
+| BM25 batch-local IDF | 中 | ✅ Phase 9 已解决 | 持久化索引 BM25 已完成，`RewriteToBm25PlanRule` 已启用。IDF 基于 segment 级持久化索引 |
+| BM25 query_type 硬编码 OR | 低 | ✅ Phase 9 已解决 | `bm25()` 第 4 参数支持 `'any'`/`'all'` |
+| RewriteToBm25PlanRule SIGSEGV | 高 | ✅ Phase 9 已解决 | 根因：`ProjectionIterator` 丢弃虚拟列。修复：forward 动态追加的虚拟列到输出 chunk |
 | null_bitmap 使用 fopen 而非 StarRocks 文件抽象 | 中 | ✅ Phase 7 已解决 | 已改用 `WritableFile` / `RandomAccessFile` API |
 | tantivy index 损坏无降级策略 | 中 | ✅ Phase 7 已解决 | `_degraded` 标记 + 诊断错误信息 |
 | `tokenize_text` 每次创建 TokenizerManager | 低 | ✅ Phase 8 已解决 | `LazyLock<TokenizerManager>` 全局单例 |
 | Writer 逐行 FFI 调用 + String 拷贝 | 低 | ✅ Phase 8 已解决 | `tantivy_writer_add_doc_with_len()` ptr+len 接口 |
+| `table.addColumn()` schema 污染 | 低 | ⚠️ 已知 tech debt | `RewriteToBm25PlanRule` 和 `RewriteToVectorPlanRule` 都会向 OlapTable 内存 schema 追加虚拟列。已加幂等保护（`getColumn != null`），但虚拟列在 FE 存活期间持续存在。上游模式，非本项目引入 |
 
 ---
 
@@ -1008,6 +1011,31 @@ Compaction（horizontal/vertical）读旧 rowset → 合并 → 写新 rowset。
 | 9.3 | `gin_functions.cpp` | `bm25()` 检测目标列是否有 GIN index，如有则打开持久化 reader 查询；无则 fallback 到 batch-local |
 | 9.4 | FE Analyzer | `bm25()` 第 4 参数支持 query_type（`'any'`/`'all'`），透传到 BE |
 
+### 9.3 完成状态（2026-04-19）
+
+**已完成**:
+- BE 端完整实现：`TantivyInvertedReader::query_bm25()` → FFI `tantivy_query_bm25()` 链路
+- `SegmentIterator::_compute_bm25_scores()` 基于持久化 GIN 索引计算 BM25 分数
+- `OlapChunkSource` 从 Thrift `TBm25SearchOptions` 提取参数并逐层传播到 `SegmentReadOptions`
+- `InvertedIndexIterator::query_bm25()` 虚函数 + 实现
+- FE 端 `RewriteToBm25PlanRule` 优化规则（识别 BM25 调用、创建虚拟列、设置 Bm25SearchOptions）
+- Thrift `TBm25SearchOptions` struct
+- Profile 计数器 `Bm25ScoreTime` / `Bm25ScoredRows`
+- `__bm25_score__` 虚拟列追加逻辑（segment_iterator.cpp，始终追加，未评分行填 0）
+- `ProjectionIterator` 虚拟列传播修复（详见下方根因分析）
+
+**已修复 Bug**: `RewriteToBm25PlanRule` SIGSEGV / `slot_id not found`
+- 症状：启用 optimizer rule 后 BM25 查询在 `ProjectOperator::push_chunk` → `ColumnRef::evaluate_checked` 处抛出 `slot_id 11 not found`
+- 根因：`new_segment_iterator()` 在查询有 predicate 且 predicate 列数 < schema 列数时，会创建 `ProjectionIterator` 对 segment_iterator 做列重排。`ProjectionIterator::do_get_next` 只通过 `_index_map` 转发静态 schema 中的列，而 `segment_iterator` 通过 `append_vector_column` 动态追加的虚拟列（`__bm25_score__`、`__vector_distance__`）被丢弃
+- 修复（`be/src/storage/projection_iterator.cpp`）：在 `do_get_next` 中检测子 chunk 是否有超出静态 schema 的额外列，如有则通过 `append_vector_column` 传递到输出 chunk，并重置内部 `_chunk` 以避免 schema 累积
+- 配套修复（`be/src/exec/pipeline/scan/olap_chunk_source.cpp`）：slot→index 重映射逻辑增加 `is_slot_exist` 检查和 `get_field_index_by_name` 有效性验证，避免虚拟列的 slot 映射被覆盖
+
+**E2E 验证结果（持久化索引模式）**:
+- TC1: BM25(content, 'database') + MATCH_ANY → 2 条匹配，score > 0，排序正确 ✅
+- TC2: BM25(content, 'analytics') + MATCH_ANY → 1 条匹配，score > 0 ✅
+- TC3: MATCH_PHRASE 'real-time analytics' → 1 条匹配 ✅
+- TC4: MATCH_ANY 'streaming' → 1 条匹配 ✅
+
 ---
 
 ## 远期方向（P2，暂不排期）
@@ -1016,6 +1044,8 @@ Compaction（horizontal/vertical）读旧 rowset → 合并 → 写新 rowset。
 
 | 方向 | 工作量 | 说明 |
 |------|--------|------|
+| 跨 segment BM25 全局 IDF | 2-3d | 当前 BM25 是 segment 级独立评分，跨 segment 的 IDF 不一致。需要实现全局 IDF 统计（类 ES 的 DFS_QUERY_THEN_FETCH 模式）|
+| BM25 TopK 下推到 tantivy collector | 1-2d | `ORDER BY BM25() LIMIT K` 下推到 tantivy `TopDocs` collector，避免全量评分后排序 |
 | Shared-Data (Cloud-Native) 模式 | 3-5d | tantivy index 目录打包为 tar 存储到 S3/OSS，查询时下载到本地缓存 |
 | ARRAY/JSON 类型支持 | 2d | `ARRAY<VARCHAR>` 展开索引、`JSON` 字段提取索引 |
 | MATCH_PHRASE slop 参数 | 0.5d | 扩展语法 + FFI 调用 `PhraseQuery::with_slop()` |

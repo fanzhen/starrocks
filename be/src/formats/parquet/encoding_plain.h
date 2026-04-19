@@ -589,7 +589,7 @@ public:
         auto* slices = reinterpret_cast<Slice*>(dst);
         size_t i = 0;
 
-#ifdef __AVX2__
+#if defined(__AVX2__) && defined(__clang__)
         static_assert(sizeof(Slice) == sizeof(int128_t));
         __m256i fixed_length = _mm256_set1_epi64x(_type_length);
         __m256i inc = _mm256_set1_epi64x(_type_length * 4);

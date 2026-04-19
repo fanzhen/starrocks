@@ -84,6 +84,26 @@ Status ProjectionIterator::do_get_next(Chunk* chunk) {
         for (size_t i = 0; i < _index_map.size(); i++) {
             chunk->get_column_by_index(i).swap(input_columns[_index_map[i]]);
         }
+        size_t child_num_fields = _child->output_schema().num_fields();
+        if (_chunk->num_columns() > child_num_fields) {
+            const auto& slot_map = _chunk->get_slot_id_to_index_map();
+            for (size_t i = child_num_fields; i < _chunk->num_columns(); i++) {
+                auto field = _chunk->schema()->field(i);
+                SlotId slot_id = 0;
+                bool found = false;
+                for (const auto& [sid, idx] : slot_map) {
+                    if (idx == i) {
+                        slot_id = sid;
+                        found = true;
+                        break;
+                    }
+                }
+                DCHECK(found) << "virtual column at index " << i << " has no slot mapping";
+                chunk->append_vector_column(std::move(input_columns[i]), field, slot_id);
+            }
+            // Virtual columns modified _chunk's schema; recreate next time to keep it clean
+            _chunk = nullptr;
+        }
     }
 #ifndef NDEBUG
     if (st.ok()) {

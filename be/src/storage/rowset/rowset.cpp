@@ -810,6 +810,10 @@ Status Rowset::get_segment_iterators(const Schema& schema, const RowsetReadOptio
     }
     seg_options.prune_column_after_index_filter = options.prune_column_after_index_filter;
     seg_options.enable_gin_filter = options.enable_gin_filter;
+    seg_options.bm25_query = options.bm25_query;
+    seg_options.bm25_query_type = options.bm25_query_type;
+    seg_options.bm25_column_name = options.bm25_column_name;
+    seg_options.bm25_slot_id = options.bm25_slot_id;
     seg_options.has_preaggregation = options.has_preaggregation;
 
     auto segment_schema = schema;

@@ -37,6 +37,7 @@ struct TokenizerState {
 struct Bm25State {
     std::string query;
     std::string tokenizer_name;
+    int32_t query_type = 0; // 0=any, 1=all, 2=phrase
 };
 
 Status GinFunctions::tokenize_prepare(FunctionContext* context, FunctionContext::FunctionStateScope scope) {
@@ -98,9 +99,29 @@ Status GinFunctions::bm25_prepare(FunctionContext* context, FunctionContext::Fun
                                     "'. Supported: 'standard', 'english', 'chinese', 'none'.");
     }
 
+    // Arg 3 (query_type) is optional; if present, must be a constant.
+    int32_t query_type = 0; // default: any (OR)
+    if (context->get_num_args() >= 4) {
+        auto qt_col = context->get_constant_column(3);
+        RETURN_IF(qt_col == nullptr, Status::InvalidArgument("bm25() requires a constant query_type argument"));
+        auto qt_val = ColumnHelper::get_const_value<TYPE_VARCHAR>(qt_col);
+        std::string qt_str(qt_val.data, qt_val.size);
+        if (qt_str == "any") {
+            query_type = 0;
+        } else if (qt_str == "all") {
+            query_type = 1;
+        } else if (qt_str == "phrase") {
+            query_type = 2;
+        } else {
+            return Status::NotSupported("Unknown query_type '" + qt_str +
+                                        "'. Supported: 'any', 'all', 'phrase'.");
+        }
+    }
+
     auto* state = new Bm25State();
     state->query = std::move(query);
     state->tokenizer_name = std::move(tokenizer_name);
+    state->query_type = query_type;
     context->set_function_state(scope, state);
     return Status::OK();
 }
@@ -184,8 +205,9 @@ StatusOr<ColumnPtr> GinFunctions::tokenize(FunctionContext* context, const starr
 //
 // For single-batch queries (small tables or LIMIT), scores are correct standard BM25.
 StatusOr<ColumnPtr> GinFunctions::bm25(FunctionContext* context, const starrocks::Columns& columns) {
-    if (columns.size() < 2 || columns.size() > 3) {
-        return Status::InvalidArgument("bm25() requires 2 or 3 arguments: bm25(text, query [, tokenizer])");
+    if (columns.size() < 2 || columns.size() > 4) {
+        return Status::InvalidArgument(
+                "bm25() requires 2-4 arguments: bm25(text, query [, tokenizer [, query_type]])");
     }
 
     auto* state = reinterpret_cast<Bm25State*>(context->get_function_state(FunctionContext::THREAD_LOCAL));
@@ -256,8 +278,8 @@ StatusOr<ColumnPtr> GinFunctions::bm25(FunctionContext* context, const starrocks
         return Status::InternalError("bm25(): failed to open tantivy reader (dir=" + tmp_dir + ")");
     }
 
-    // query_type=0 (any/OR), limit=0 (all results).
-    TantivyScoreResult* scores = tantivy_query_bm25(reader, "content", query_str.c_str(), 0, 0);
+    // Use query_type from state (0=any, 1=all, 2=phrase), limit=0 (all results).
+    TantivyScoreResult* scores = tantivy_query_bm25(reader, "content", query_str.c_str(), state->query_type, 0);
 
     // Build row_id → score map.
     std::unordered_map<uint32_t, float> score_map;

@@ -742,6 +742,7 @@ public class QueryOptimizer extends Optimizer {
         scheduler.rewriteOnce(tree, rootTaskContext, UnionToValuesRule.getInstance());
 
         scheduler.rewriteOnce(tree, rootTaskContext, RuleSet.VECTOR_REWRITE_RULES);
+        scheduler.rewriteOnce(tree, rootTaskContext, RuleSet.BM25_REWRITE_RULES);
 
         scheduler.rewriteOnce(tree, rootTaskContext, SplitJoinORToUnionRule.getInstance());
         // this rule should be after mv

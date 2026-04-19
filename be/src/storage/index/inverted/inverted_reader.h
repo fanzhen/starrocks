@@ -15,6 +15,7 @@
 #pragma once
 
 #include <utility>
+#include <vector>
 
 #include "fs/fs_util.h"
 #include "roaring/roaring.hh"
@@ -48,6 +49,12 @@ public:
                               roaring::Roaring* bit_map) = 0;
 
     virtual InvertedIndexReaderType get_inverted_index_reader_type() = 0;
+
+    virtual Status query_bm25(OlapReaderStatistics* stats, const std::string& column_name,
+                              const std::string& query, int32_t query_type, int32_t limit,
+                              std::vector<std::pair<uint32_t, float>>* results) {
+        return Status::NotSupported("query_bm25 not supported");
+    }
 
     virtual Status load(const IndexReadOptions& opt, void* meta) { return Status::OK(); }
 

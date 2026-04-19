@@ -94,6 +94,7 @@ be/src/gen_cpp/opcode
 be/src/thirdparty/starcache/
 be/ut_build_ASAN/
 be/tags
+be/src/storage/index/inverted/tantivy_ffi/target/
 
 #ignore vscode project file
 .vscode

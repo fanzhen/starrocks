@@ -63,6 +63,7 @@ import com.starrocks.catalog.RangePartitionInfo;
 import com.starrocks.catalog.Replica;
 import com.starrocks.catalog.Tablet;
 import com.starrocks.common.AnalysisException;
+import com.starrocks.common.Bm25SearchOptions;
 import com.starrocks.common.Config;
 import com.starrocks.common.ErrorCode;
 import com.starrocks.common.ErrorReport;
@@ -200,6 +201,8 @@ public class OlapScanNode extends AbstractOlapTableScanNode {
 
     private VectorSearchOptions vectorSearchOptions = new VectorSearchOptions();
 
+    private Bm25SearchOptions bm25SearchOptions = new Bm25SearchOptions();
+
     private boolean enableGlobalLateMaterialization = false;
 
     // Set to true after it's confirmed at some point during the execution of this request that there is some living CN.
@@ -227,6 +230,10 @@ public class OlapScanNode extends AbstractOlapTableScanNode {
 
     public void setVectorSearchOptions(VectorSearchOptions vectorSearchOptions) {
         this.vectorSearchOptions = vectorSearchOptions;
+    }
+
+    public void setBm25SearchOptions(Bm25SearchOptions bm25SearchOptions) {
+        this.bm25SearchOptions = bm25SearchOptions;
     }
 
     public void setIsPreAggregation(boolean isPreAggregation, String reason) {
@@ -1185,6 +1192,10 @@ public class OlapScanNode extends AbstractOlapTableScanNode {
 
             if (vectorSearchOptions != null && vectorSearchOptions.isEnableUseANN()) {
                 msg.olap_scan_node.setVector_search_options(vectorSearchOptions.toThrift());
+            }
+
+            if (bm25SearchOptions != null && bm25SearchOptions.isEnabled()) {
+                msg.olap_scan_node.setBm25_search_options(bm25SearchOptions.toThrift());
             }
 
             if (enableGlobalLateMaterialization) {

@@ -14,6 +14,8 @@
 
 #pragma once
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "storage/index/inverted/inverted_index_option.h"
 #include "storage/index/inverted/inverted_reader.h"
@@ -45,6 +47,10 @@ public:
     virtual InvertedIndexReaderType get_inverted_index_reader_type() const;
 
     virtual bool is_untokenized() const { return _analyser_type == InvertedIndexParserType::PARSER_NONE; }
+
+    virtual Status query_bm25(const std::string& column_name, const std::string& query,
+                              int32_t query_type, int32_t limit,
+                              std::vector<std::pair<uint32_t, float>>* results);
 
     virtual Status close() { return Status::OK(); }
 

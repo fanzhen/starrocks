@@ -608,6 +608,13 @@ struct TVectorSearchOptions {
   11: optional i32 vector_slot_id;
 }
 
+struct TBm25SearchOptions {
+  1: optional string query
+  2: optional i32 query_type        // 0=any, 1=all, 2=phrase
+  3: optional string column_name    // GIN index column name
+  4: optional i32 bm25_slot_id      // virtual column __bm25_score__ slot ID
+}
+
 enum SampleMethod {
   BY_BLOCK,
   BY_PAGE,
@@ -666,6 +673,8 @@ struct TOlapScanNode {
   55: optional i32 next_uniq_id
 
   56: optional bool enable_global_late_materialization
+
+  57: optional TBm25SearchOptions bm25_search_options
 }
 
 struct TJDBCScanNode {
@@ -716,6 +725,8 @@ struct TLakeScanNode {
   46: optional i32 next_uniq_id
 
   56: optional bool enable_global_late_materialization
+
+  57: optional TBm25SearchOptions bm25_search_options
 }
 
 struct TEqJoinCondition {

@@ -23,6 +23,7 @@ import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.PhysicalPartition;
 import com.starrocks.catalog.Table;
+import com.starrocks.common.Bm25SearchOptions;
 import com.starrocks.common.Pair;
 import com.starrocks.common.VectorSearchOptions;
 import com.starrocks.sql.ast.TableSampleClause;
@@ -67,6 +68,7 @@ public class PhysicalOlapScanOperator extends PhysicalScanOperator {
     private List<ScalarOperator> prunedPartitionPredicates = Lists.newArrayList();
 
     private VectorSearchOptions vectorSearchOptions = new VectorSearchOptions();
+    private Bm25SearchOptions bm25SearchOptions = new Bm25SearchOptions();
 
     private long gtid = 0;
 
@@ -109,11 +111,20 @@ public class PhysicalOlapScanOperator extends PhysicalScanOperator {
         this.prunedPartitionPredicates = scanOperator.getPrunedPartitionPredicates();
         this.usePkIndex = scanOperator.isUsePkIndex();
         this.vectorSearchOptions = scanOperator.getVectorSearchOptions();
+        this.bm25SearchOptions = scanOperator.getBm25SearchOptions();
         this.sample = scanOperator.getSample();
     }
 
     public VectorSearchOptions getVectorSearchOptions() {
         return vectorSearchOptions;
+    }
+
+    public Bm25SearchOptions getBm25SearchOptions() {
+        return bm25SearchOptions;
+    }
+
+    public void setBm25SearchOptions(Bm25SearchOptions bm25SearchOptions) {
+        this.bm25SearchOptions = bm25SearchOptions;
     }
 
     public long getSelectedIndexMetaId() {
@@ -323,6 +334,7 @@ public class PhysicalOlapScanOperator extends PhysicalScanOperator {
 
             builder.prunedPartitionPredicates = operator.prunedPartitionPredicates;
             builder.vectorSearchOptions = operator.vectorSearchOptions;
+            builder.bm25SearchOptions = operator.bm25SearchOptions;
             builder.sample = operator.getSample();
             builder.columnAccessPaths = operator.columnAccessPaths;
 

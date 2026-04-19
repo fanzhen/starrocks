@@ -35,4 +35,10 @@ InvertedIndexReaderType InvertedIndexIterator::get_inverted_index_reader_type() 
     return _reader->get_inverted_index_reader_type();
 }
 
+Status InvertedIndexIterator::query_bm25(const std::string& column_name, const std::string& query,
+                                          int32_t query_type, int32_t limit,
+                                          std::vector<std::pair<uint32_t, float>>* results) {
+    return _reader->query_bm25(_stats, column_name, query, query_type, limit, results);
+}
+
 } // namespace starrocks

@@ -190,6 +190,34 @@ Status TantivyInvertedReader::query(OlapReaderStatistics* stats, const std::stri
     return Status::OK();
 }
 
+Status TantivyInvertedReader::query_bm25(OlapReaderStatistics* stats, const std::string& column_name,
+                                         const std::string& query, int32_t query_type, int32_t limit,
+                                         std::vector<std::pair<uint32_t, float>>* results) {
+    RETURN_IF_ERROR(_ensure_reader_opened());
+
+    if (_degraded) {
+        return Status::InternalError(
+                fmt::format("Tantivy index is corrupted or missing at {}, cannot compute BM25 scores", _index_path));
+    }
+
+    const char* kTantivyFieldName = TANTIVY_FIELD_NAME.c_str();
+    TantivyScoreResult* scores = tantivy_query_bm25(_reader, kTantivyFieldName, query.c_str(), query_type, limit);
+
+    if (scores == nullptr) {
+        LOG(WARNING) << "Tantivy BM25 query returned null: path=" << _index_path << " query=" << query;
+        return Status::InternalError(fmt::format("Tantivy BM25 query failed for query '{}'", query));
+    }
+
+    uint32_t count = tantivy_score_count(scores);
+    results->reserve(count);
+    for (uint32_t i = 0; i < count; i++) {
+        results->emplace_back(tantivy_score_row_id(scores, i), tantivy_score_value(scores, i));
+    }
+    tantivy_score_destroy(scores);
+
+    return Status::OK();
+}
+
 Status TantivyInvertedReader::query_null(OlapReaderStatistics* stats, const std::string& column_name,
                                          roaring::Roaring* bit_map) {
     RETURN_IF_ERROR(_ensure_reader_opened());
@@ -205,10 +233,14 @@ Status TantivyInvertedReader::query_null(OlapReaderStatistics* stats, const std:
 
     auto file_or = fs::new_random_access_file(null_bitmap_path);
     if (!file_or.ok()) {
-        // null_bitmap file not found within a valid index directory means no nulls were written.
-        // This is distinct from the index directory itself being missing (caught by _degraded above).
-        *bit_map = roaring::Roaring();
-        return Status::OK();
+        if (file_or.status().is_not_found()) {
+            // null_bitmap file not found within a valid index directory means no nulls were written.
+            *bit_map = roaring::Roaring();
+            return Status::OK();
+        }
+        // Other errors (IOError, permission denied, transient FS error) must propagate
+        // to avoid false negatives where null rows are silently omitted.
+        return file_or.status();
     }
     auto file = std::move(file_or.value());
 
