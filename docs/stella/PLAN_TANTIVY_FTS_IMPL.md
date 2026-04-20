@@ -788,7 +788,8 @@ echo "=== Result: $PASS PASS, $FAIL FAIL ==="
 | 代码审查修复 | FFI 安全性 + 代码质量                  | Done | 2026-04-18 |
 | Phase 7 | 可靠性加固（P0）                      | Done | 2026-04-18 |
 | Phase 8 | FFI 性能优化（P1）                   | Done | 2026-04-19 |
-| Phase 9 | BM25 持久化索引（P1）                 | Done | 2026-04-19 |
+| Phase 9 | BM25 持久化索引（P1）                 | Done | 2026-04-20 |
+| 最终 E2E 验证 | 30/30 全量 E2E 通过                  | Done | 2026-04-20 |
 
 ### 代码审查修复详情（2026-04-18）
 
@@ -1030,11 +1031,36 @@ Compaction（horizontal/vertical）读旧 rowset → 合并 → 写新 rowset。
 - 修复（`be/src/storage/projection_iterator.cpp`）：在 `do_get_next` 中检测子 chunk 是否有超出静态 schema 的额外列，如有则通过 `append_vector_column` 传递到输出 chunk，并重置内部 `_chunk` 以避免 schema 累积
 - 配套修复（`be/src/exec/pipeline/scan/olap_chunk_source.cpp`）：slot→index 重映射逻辑增加 `is_slot_exist` 检查和 `get_field_index_by_name` 有效性验证，避免虚拟列的 slot 映射被覆盖
 
-**E2E 验证结果（持久化索引模式）**:
+**E2E 验证结果（持久化索引模式，4 个手动用例）**:
 - TC1: BM25(content, 'database') + MATCH_ANY → 2 条匹配，score > 0，排序正确 ✅
 - TC2: BM25(content, 'analytics') + MATCH_ANY → 1 条匹配，score > 0 ✅
 - TC3: MATCH_PHRASE 'real-time analytics' → 1 条匹配 ✅
 - TC4: MATCH_ANY 'streaming' → 1 条匹配 ✅
+
+### 9.4 最终 E2E 全量验证（2026-04-20）
+
+**脚本**: `test/sql/test_tantivy_inverted/verify_final.sh`
+**运行方式**: `docker exec sr-dev bash /build/test/sql/test_tantivy_inverted/verify_final.sh`
+**前置**: FE + BE 已启动，`enable_experimental_gin = true`
+
+**结果: 30/30 ALL PASSED**
+
+| Part | 范围 | 用例数 | 结果 |
+|------|------|--------|------|
+| Part 1: MATCH Queries | MATCH_ANY/ALL/PHRASE/PHRASE_PREFIX/REGEXP/NOT/LIMIT | 10 | 10/10 ✅ |
+| Part 2: Chinese Tokenizer | 中文分词 MATCH_ANY/AND/PHRASE | 3 | 3/3 ✅ |
+| Part 3: TOKENIZE Function | TOKENIZE('text', 'standard'/'chinese') | 2 | 2/2 ✅ |
+| Part 4: BM25 Persistent Index | 持久化 BM25 评分/EXPLAIN/一致性/query_type | 8 | 8/8 ✅ |
+| Part 5: Fallback & Edge Cases | 无 GIN fallback/非 GIN MATCH 报错/NULL/空查询 | 4 | 4/4 ✅ |
+| Part 6: Compaction Survival | 多 segment 后 MATCH + BM25 | 2 | 2/2 ✅ |
+| Part 7: Profile Counters | enable_profile + last_query_id() | 1 | 1/1 ✅ |
+
+**关键验证点**:
+- BM25 top result: id=3, score=0.9803 (短文档高频词得分最高，符合 BM25 公式预期)
+- EXPLAIN 确认 `__bm25_score__` 虚拟列（无 `bm25()` 函数调用残留）
+- BM25 排序 3 次执行完全一致
+- MATCH_ALL 'database analytics': count=1 ≤ MATCH_ANY count=5（AND ⊂ OR 语义正确）
+- 中文分词: jieba 精确模式 `数据库`/`查询`/`全文检索` 分词正确
 
 ---
 
