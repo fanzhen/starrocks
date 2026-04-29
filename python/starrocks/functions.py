@@ -269,3 +269,20 @@ def array_agg(col: Column) -> Column:
 def bm25(col: Column, query: str) -> Column:
     """BM25(col, 'query') — StarRocks full-text search scoring."""
     return Column(FunctionCall("BM25", (col.expr, Literal(query))))
+
+
+# -- vector functions ---------------------------------------------------------
+
+def cosine_similarity(col1: Column, col2: Column) -> Column:
+    """cosine_similarity(ARRAY<FLOAT>, ARRAY<FLOAT>) → FLOAT."""
+    return Column(FunctionCall("cosine_similarity", (col1.expr, col2.expr)))
+
+
+def cosine_similarity_norm(col1: Column, col2: Column) -> Column:
+    """cosine_similarity_norm(ARRAY<FLOAT>, ARRAY<FLOAT>) → FLOAT."""
+    return Column(FunctionCall("cosine_similarity_norm", (col1.expr, col2.expr)))
+
+
+def l2_distance(col1: Column, col2: Column) -> Column:
+    """l2_distance(ARRAY<FLOAT>, ARRAY<FLOAT>) → FLOAT."""
+    return Column(FunctionCall("l2_distance", (col1.expr, col2.expr)))

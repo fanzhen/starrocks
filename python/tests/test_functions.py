@@ -151,3 +151,21 @@ class TestAggregates:
     def test_lit(self):
         assert func.lit(42).to_sql() == "42"
         assert func.lit("hello").to_sql() == "'hello'"
+
+
+class TestVectorFunctions:
+    def test_cosine_similarity(self):
+        sql = func.cosine_similarity(col("emb1"), col("emb2")).to_sql()
+        assert sql == "cosine_similarity(`emb1`, `emb2`)"
+
+    def test_cosine_similarity_norm(self):
+        sql = func.cosine_similarity_norm(col("emb1"), col("emb2")).to_sql()
+        assert sql == "cosine_similarity_norm(`emb1`, `emb2`)"
+
+    def test_l2_distance(self):
+        sql = func.l2_distance(col("emb1"), col("emb2")).to_sql()
+        assert sql == "l2_distance(`emb1`, `emb2`)"
+
+    def test_cosine_similarity_alias(self):
+        c = func.cosine_similarity(col("emb1"), col("emb2")).alias("sim")
+        assert c.to_sql() == "cosine_similarity(`emb1`, `emb2`) AS `sim`"
