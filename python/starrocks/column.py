@@ -16,7 +16,13 @@ from starrocks.plan.expr import (
 
 
 def col(name: str) -> Column:
-    """Create a Column reference by name."""
+    """Create a Column reference by name.
+
+    Supports dotted notation: ``col("t.id")`` → ```t`.`id```.
+    """
+    if "." in name:
+        parts = name.split(".", 1)
+        return Column(ColumnRef(parts[1], table_alias=parts[0]))
     return Column(ColumnRef(name))
 
 
