@@ -36,8 +36,8 @@ session.execute("""
 
 # TC1: raw SQL cosine_similarity
 print("--- TC1: raw SQL cosine_similarity ---")
-rows = session.fetch_all("SELECT id, cosine_similarity(emb1, emb2) AS sim FROM test_dataframe.vec_test ORDER BY id")
-sims = {r[0]: r[1] for r in rows}
+rows = session.execute("SELECT id, cosine_similarity(emb1, emb2) AS sim FROM test_dataframe.vec_test ORDER BY id")
+sims = {r["id"]: r["sim"] for r in rows}
 check("TC1: identical vectors sim=1.0", abs(sims[1] - 1.0) < 1e-5)
 check("TC1: orthogonal vectors sim=0.0", abs(sims[2] - 0.0) < 1e-5)
 check("TC1: same vectors sim=1.0", abs(sims[4] - 1.0) < 1e-5)
