@@ -27,12 +27,11 @@
 | Stage | 环境要求 | 说明 |
 |-------|---------|------|
 | Stage 1 | Python 3.10+ 本地环境 + StarRocks allin1 Docker 实例 | 纯 Python 客户端，无服务端改动 |
-| Stage 2 | + dev-env 容器（BE 编译）+ Rust 工具链 | Rust FFI 函数注册到 BE，需要编译 FE/BE |
-| Stage 3 | 同 Stage 2 + StarRocks Arrow Flight SQL 支持 | 依赖 StarRocks 上游 Arrow Flight SQL 特性 |
-| Stage 4 | + Ray 集群 + Daft 安装 | Ray head + worker 节点，Daft 作为 Ray 上的执行引擎 |
-| Stage 5 | 同 Stage 4 | 在 Stage 4 基础上增加优化层 |
+| Stage 2 | + Ray 单节点 + Daft | Daft on Ray POC，MySQL 桥梁模式 |
+| Stage 3 | + StarRocks Arrow Flight SQL 支持 | Arrow Flight 替代 MySQL 协议的数据交换路径 |
+| Stage 4 | + Ray 集群（多节点） | 完整 Daft 集成 + 自动路由 + 多模态类型 |
 
-各 Stage 的具体环境增量在对应 Stage 开头的"环境要求"小节说明。
+各 Stage 的具体环境增量在对应 Stage 开头说明。
 
 ### 0.3 分支 & Git
 
@@ -628,134 +627,85 @@ sys.exit(0 if FAIL == 0 else 1)
 
 ---
 
-## Stage 2: Rust Native Functions
+### Phase 7: 向量函数映射 ✅
 
-> **目标**: 复用 tantivy FFI 模式（CMake + Rust crate + `extern "C"`），在 BE 注册 Rust 实现的高性能标量/向量函数。用户通过 DataFrame API 调用，生成含自定义函数的 SQL，由 StarRocks 原生执行。
+Stage 1 的收尾工作。StarRocks 已内置 `cosine_similarity`、`l2_distance`、`cosine_similarity_norm` 等向量函数，在 `functions.py` 中添加对应的 DataFrame API 映射即可，零服务端改动。
+
+| 步骤 | 文件 | 内容 |
+|------|------|------|
+| 7.1 | `python/starrocks/functions.py` | `func.cosine_similarity()`, `func.l2_distance()`, `func.cosine_similarity_norm()` |
+| 7.2 | `python/tests/test_functions.py` | 向量函数 SQL 编译测试 |
+
+---
+
+## Stage 2: Daft on Ray POC
+
+> **目标**: 验证 §9.3 推荐架构 (StarRocks + Daft on Ray) 的核心管道：StarRocks 查数据 → Daft 做 Python 处理 → 结果写回 StarRocks。
 >
-> **对应 DESIGN 9.4 阶段 2**: + Rust Native Functions in BE
+> 跳过 Arrow Flight，用 MySQL → pandas → Daft 桥梁（POC 阶段足够）。阶段 3 引入 Arrow Flight 后替换。
+>
+> **对应 DESIGN §9.4 阶段 2**: Daft on Ray POC
 >
 > **前置依赖**: Stage 1 完成
 >
 > **环境要求**: 在 Stage 1 基础上增加：
-> - dev-env 容器（`starrocks/dev-env-ubuntu`）用于 BE 编译
-> - Rust 工具链（容器内安装 `rustup`）
-> - BE build: `./build.sh --be -j 8`（约 47 分钟冷编译）
-> - FE build: `./build.sh --fe`（约 3 分钟）
-> - 参考 tantivy 项目的 dev-env 容器搭建流程
+> - 远程服务器: `pip3.11 install "ray[default]" getdaft`
+> - Ray 单节点: `ray start --head`
 
 ---
 
-### Phase 7: Rust FFI 基础设施 + cosine_similarity
-
-#### 7.1 目标与验收标准
-
-在 BE 中注册第一个 Rust 实现的标量函数 `cosine_similarity(ARRAY<FLOAT>, ARRAY<FLOAT>) → FLOAT`，用户可通过 DataFrame API 调用。
-
-**验收用例**:
-
-| # | 用例 | PASS 条件 |
-|---|------|-----------|
-| 1 | `SELECT cosine_similarity([1.0,2.0,3.0], [4.0,5.0,6.0])` 直接 SQL | 返回正确的余弦相似度值 (≈0.9746) |
-| 2 | `func.cosine_similarity(col("emb1"), col("emb2"))` DataFrame API | 生成正确 SQL + E2E 结果正确 |
-| 3 | BE 启动日志包含 Rust 函数注册信息 | `Registered Rust function: cosine_similarity` |
-| 4 | 空数组 / 长度不等 → 错误处理 | 返回 NULL 或友好错误 |
-| 5 | 性能: 1M 行 cosine_similarity vs 纯 SQL 实现 | Rust 版本 ≥ 2x 性能提升 |
-
-#### 7.2 前置依赖
-
-- Stage 1 Phase 6 完成
-- dev-env 容器 + Rust 工具链就绪
-- 参考 tantivy FFI 的 CMake 集成模式
-
-#### 7.3 代码任务
-
-| 步骤 | 文件 | 内容 |
-|------|------|------|
-| 7.1 | `be/src/rust_functions/Cargo.toml` | Rust crate 配置，`crate-type = ["staticlib"]` |
-| 7.2 | `be/src/rust_functions/src/cosine.rs` | Rust 实现 cosine_similarity，`extern "C"` FFI 接口 |
-| 7.3 | `be/src/rust_functions/src/lib.rs` | FFI 入口，注册函数表 |
-| 7.4 | `be/src/exprs/rust_function_call_expr.h/cpp` | C++ 侧 Rust 函数调用封装 |
-| 7.5 | `be/src/exprs/CMakeLists.txt` | CMake 链接 Rust staticlib |
-| 7.6 | `gensrc/thrift/Exprs.thrift` | 新增 `TRustFunctionCall` 节点类型 |
-| 7.7 | `fe/.../RustFunctionCallExpr.java` | FE 侧 Rust 函数解析 + plan 生成 |
-| 7.8 | `python/starrocks/functions.py` | `func.cosine_similarity()` DataFrame API |
-| 7.9 | `be/test/exprs/rust_function_call_expr_test.cpp` | BE 单元测试 |
-| 7.10 | E2E 验证脚本 | cosine_similarity 全链路验证 |
-
----
-
-### Phase 8: Embedding Lookup + 向量函数库
+### Phase 8: 环境搭建 + Daft 基础集成
 
 #### 8.1 目标与验收标准
 
-扩展 Rust 函数库，增加 embedding lookup 和常用向量操作函数。
-
-**验收用例**:
-
 | # | 用例 | PASS 条件 |
 |---|------|-----------|
-| 1 | `func.l2_distance(col("emb1"), col("emb2"))` | 欧氏距离计算正确 |
-| 2 | `func.inner_product(col("emb1"), col("emb2"))` | 内积计算正确 |
-| 3 | `func.normalize_l2(col("embedding"))` | L2 归一化正确 |
-| 4 | `func.embedding_lookup(col("text"), "model_name")` | 从预加载模型获取 embedding |
-| 5 | 向量函数 + 聚合组合 E2E | `group_by("category").agg(func.avg(func.cosine_similarity(...)))` |
+| 1 | Ray + Daft 安装验证 | `import ray; import daft` 成功 |
+| 2 | `df.to_daft()` | StarRocks 查询 → Daft DataFrame，行数/列名一致 |
+| 3 | `session.write_daft(daft_df, "target")` | Daft → StarRocks 写入，数据一致 |
+| 4 | 往返一致性 | StarRocks → Daft → StarRocks，数据完全一致 |
 
-#### 8.2 前置依赖
-
-- Phase 7 完成
-
-#### 8.3 代码任务
+#### 8.2 代码任务
 
 | 步骤 | 文件 | 内容 |
 |------|------|------|
-| 8.1 | `be/src/rust_functions/src/vector_ops.rs` | l2_distance, inner_product, normalize_l2 |
-| 8.2 | `be/src/rust_functions/src/embedding.rs` | embedding_lookup: 加载 ONNX/预训练模型，text → vector |
-| 8.3 | `fe/.../` | FE 注册新函数签名 |
-| 8.4 | `python/starrocks/functions.py` | `func.l2_distance()`, `func.inner_product()`, `func.normalize_l2()`, `func.embedding_lookup()` |
-| 8.5 | `be/test/exprs/` | 向量函数单元测试 |
-| 8.6 | E2E 验证脚本 | 向量函数库全链路验证 |
+| 8.1 | `python/starrocks/dataframe.py` | `to_daft()`: `to_pandas()` → `daft.from_pandas()` |
+| 8.2 | `python/starrocks/session.py` | `write_daft()`: Daft → pandas → INSERT INTO VALUES (批次 1000 行) |
+| 8.3 | `python/starrocks/daft_utils.py` | `DaftDataFrame` 包装类 (to_pandas, to_starrocks, show, daft) |
+| 8.4 | `python/tests/test_daft_integration.py` | Mock unit tests (不连 StarRocks) |
 
 ---
 
-### Phase 9: DataFrame API 集成自定义函数
+### Phase 9: map_batches 端到端管道
 
 #### 9.1 目标与验收标准
 
-DataFrame API 支持用户注册和调用自定义 Rust 函数，形成完整的 UDF 框架。
-
-**验收用例**:
-
 | # | 用例 | PASS 条件 |
 |---|------|-----------|
-| 1 | `session.register_function("my_func", ...)` | 注册自定义函数成功 |
-| 2 | `func.call("my_func", col("a"), col("b"))` | 生成 `my_func(a, b)` SQL |
-| 3 | `SHOW FUNCTIONS` 显示已注册的 Rust 函数 | 包含 cosine_similarity 等 |
-| 4 | DataFrame 链式调用含自定义函数 E2E | 结果正确 |
+| 1 | `to_daft()` + Daft UDF + `write_daft()` 全链路 | 数据正确写回 StarRocks |
+| 2 | `df.map_batches(func)` 一步语法 | 触发 StarRocks 查询 + Daft 处理 |
+| 3 | Daft UDF: 文本长度计算 | `text_len` 列值正确 |
+| 4 | Daft UDF: 数值变换 (val * 2) | 结果数值正确 |
+| 5 | 写回后 StarRocks 可查询/聚合 | `SELECT SUM(text_len)` 正确 |
 
-#### 9.2 前置依赖
-
-- Phase 8 完成
-
-#### 9.3 代码任务
+#### 9.2 代码任务
 
 | 步骤 | 文件 | 内容 |
 |------|------|------|
-| 9.1 | `python/starrocks/session.py` | `Session.register_function()` — 注册自定义函数元信息 |
-| 9.2 | `python/starrocks/functions.py` | `func.call(name, *args)` — 通用函数调用 |
-| 9.3 | `python/starrocks/compiler/sql_compiler.py` | 自定义函数 SQL 编译 |
-| 9.4 | `python/tests/` | UDF 框架单元测试 + E2E |
+| 9.1 | `python/starrocks/dataframe.py` | `map_batches(func)`: to_daft → func(daft_df) → DaftDataFrame |
+| 9.2 | `python/tests/verify_phase9_daft.py` | E2E 验收: 建表 → to_daft → UDF → write_daft → 验证 |
 
 ---
 
 ## Stage 3: Arrow Flight 数据通道
 
-> **目标**: 实现 Arrow Flight SQL Python 客户端，替代 MySQL 协议的结果获取路径，实现零拷贝列式数据传输。为 Stage 4 的 StarRocks ↔ Daft 数据流打基础。
+> **目标**: 用 Arrow Flight SQL 替代 Stage 2 的 MySQL → pandas 桥梁，实现 StarRocks ↔ Daft 零拷贝列式数据交换。
 >
-> **对应 DESIGN 9.4 阶段 3**: + Arrow Flight 数据通道
+> **对应 DESIGN §9.4 阶段 3**: + Arrow Flight 数据通道
 >
-> **前置依赖**: Stage 1 完成（Stage 2 非必需前置，可并行推进）
+> **前置依赖**: Stage 2 完成（POC 验证混合管道可行）
 >
-> **环境要求**: 在 Stage 1 基础上增加：
+> **环境要求**: 在 Stage 2 基础上增加：
 > - StarRocks 需支持 Arrow Flight SQL 协议（依赖上游特性就绪）
 > - Python 依赖: `pyarrow` (含 Flight 模块)
 > - 安全组额外开放 Arrow Flight 端口（默认 8040）
@@ -781,7 +731,7 @@ DataFrame API 支持用户注册和调用自定义 Rust 函数，形成完整的
 
 #### 10.2 前置依赖
 
-- Stage 1 Phase 1 完成（基础框架可用）
+- Stage 2 完成（Daft POC 验证混合管道可行）
 - StarRocks 实例支持 Arrow Flight SQL 协议
 
 #### 10.3 代码任务
@@ -828,13 +778,13 @@ Session 支持 MySQL 和 Arrow Flight 双通道，用户可通过参数选择或
 
 ---
 
-## Stage 4: Daft on Ray 集成
+## Stage 4: 完整 Daft 集成 + 自动路由
 
-> **目标**: 引入 Ray 集群 + Daft 执行引擎，DataFrame API 层根据操作类型自动路由——SQL 操作由 StarRocks 执行，多模态操作（Python UDF、ML 推理、图像处理）由 Daft on Ray 执行。Arrow Flight 做 StarRocks ↔ Daft 数据桥梁。
+> **目标**: 实现 §9.3 架构的完整形态——DataFrame API 层根据操作类型自动路由（SQL 操作 → StarRocks，多模态操作 → Daft on Ray），Arrow Flight 做数据桥梁，多模态类型系统。
 >
-> **对应 DESIGN 9.4 阶段 4**: + Daft on Ray 集成
+> **对应 DESIGN §9.4 阶段 4**: + 完整 Daft 集成 + 自动路由
 >
-> **前置依赖**: Stage 3 完成（Arrow Flight 是 StarRocks ↔ Daft 数据交换的前提）
+> **前置依赖**: Stage 3 完成（Arrow Flight 是高效数据交换的前提）
 >
 > **环境要求**: 在 Stage 3 基础上增加：
 > - Ray 集群: `pip install ray[default]`，至少 1 head + 1 worker 节点
@@ -862,7 +812,7 @@ Session 可连接 Ray 集群，DataFrame 可在 Daft 执行引擎上运行基本
 
 #### 12.2 前置依赖
 
-- Stage 3 Phase 11 完成
+- Stage 3 完成（Arrow Flight 数据通道就绪）
 - Ray 集群部署就绪
 
 #### 12.3 代码任务
@@ -969,11 +919,9 @@ DataFrame API 支持多模态类型标注（Image, Tensor, Embedding），与 Da
 
 ---
 
-## Stage 5: 统一调度与优化
+## Stage 5: 跨引擎查询优化（未来方向）
 
 > **目标**: 跨 StarRocks + Daft 的全局查询优化。DataFrame API 层的智能路由：分析查询 cost model，决定最优执行边界。混合查询（SQL join + ML 推理）的 pipeline 优化。
->
-> **对应 DESIGN 9.4 阶段 5**: + 统一调度与优化
 >
 > **前置依赖**: Stage 4 完成
 >
@@ -1001,7 +949,7 @@ DataFrame API 支持多模态类型标注（Image, Tensor, Embedding），与 Da
 
 #### 16.2 前置依赖
 
-- Stage 4 Phase 15 完成
+- Stage 4 完成
 
 #### 16.3 代码任务
 

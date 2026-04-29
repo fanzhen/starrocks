@@ -301,6 +301,43 @@ class DataFrame:
         sql = self.to_sql()
         return self._session.fetcher.execute_explain(sql)
 
+    def to_daft(self):
+        """Execute SQL on StarRocks, convert result to a Daft DataFrame.
+
+        Returns a daft.DataFrame backed by the query results.
+        """
+        import daft
+        pdf = self.to_pandas()
+        return daft.from_pandas(pdf)
+
+    def map_batches(self, func, *, result_columns=None):
+        """Execute SQL on StarRocks, then apply a Python function via Daft.
+
+        This is an action that triggers execution:
+        1. Compile and execute the SQL query on StarRocks
+        2. Convert results to a Daft DataFrame
+        3. Apply func via Daft map_batches
+
+        Args:
+            func: A Python callable or Daft UDF to apply.
+            result_columns: Optional dict of {col_name: daft.DataType} for output schema.
+                           If None, func is applied via with_columns_batched.
+        Returns:
+            A DaftDataFrame wrapping the Daft result.
+        """
+        from starrocks.daft_utils import DaftDataFrame
+        daft_df = self.to_daft()
+        if result_columns is not None:
+            import daft
+            expressions = [
+                daft.col(name).apply(func, return_dtype=dtype)
+                for name, dtype in result_columns.items()
+            ]
+            daft_df = daft_df.with_columns(*expressions)
+        else:
+            daft_df = func(daft_df)
+        return DaftDataFrame(daft_df, self._session)
+
     # -- repr -----------------------------------------------------------------
 
     def __repr__(self) -> str:

@@ -487,38 +487,31 @@ Snowflake Container Services 本质上是一个**容器调度层**——提供�
 
 **与 MaxFrame 的关系**：这套架构与 MaxFrame 的理念非常相似——都是 SQL 引擎 + Ray 的混合执行模型。核心差异在于：MaxFrame 的 Ray 执行层是自研的（继承自 Mars），算子优化能力有限；我们选择 Daft 作为 Ray 上的执行引擎，直接获得 Rust 内核 + 查询优化器 + 多模态类型系统的能力，避免重复造轮子。
 
-### 9.4 五阶段演进路线
+### 9.4 演进路线
 
 ```
-阶段 1:  DataFrame → SQL → StarRocks（当前 Plan Phase 1-6）
+阶段 1:  DataFrame → SQL → StarRocks（Phase 1-7 ✅）
          纯 Python 客户端，SQL 生成 + MySQL 协议，零服务端改动
-         覆盖全部 SQL 能力 + StarRocks 专有特性
+         覆盖全部 SQL 能力 + StarRocks 专有特性 + 向量函数映射
 
-阶段 2:  + Rust Native Functions in BE
-         复用 tantivy FFI 模式，在 BE 注册 Rust 实现的标量/向量函数
-         高频标准化算子（cosine_similarity、embedding lookup）以 C++/Rust 原生性能运行
-         用户通过 DataFrame API 调用，生成含自定义函数的 SQL
+阶段 2:  Daft on Ray POC（Phase 8-9，当前）
+         MySQL → pandas → Daft 桥梁，验证 StarRocks + Daft 混合管道
+         to_daft() / write_daft() / map_batches() 端到端
+         用户显式调用，不做自动路由
 
 阶段 3:  + Arrow Flight 数据通道
-         StarRocks ↔ 外部系统的高效列式数据交换
-         替代 MySQL 协议的结果获取路径，免去行列格式转换开销
-         为阶段 4 的 StarRocks ↔ Daft 数据流打基础
+         替代 MySQL 协议的数据交换路径
+         StarRocks ↔ Daft 零拷贝列式传输
 
-阶段 4:  + Daft on Ray 集成
-         引入 Ray 集群 + Daft 执行引擎
-         DataFrame API 层根据操作类型自动路由：SQL 操作 → StarRocks，多模态操作 → Daft on Ray
-         Arrow Flight 做 StarRocks ↔ Daft 数据桥梁
-         Python UDF、ML 推理、图像处理在 Daft 执行引擎上跑，享受算子优化
-
-阶段 5:  + 统一调度与优化
-         跨 StarRocks + Daft 的全局查询优化
-         DataFrame API 层的智能路由：分析查询 cost model，决定最优执行边界
-         混合查询（SQL join + ML 推理）的 pipeline 优化
+阶段 4:  + 完整 Daft 集成 + 自动路由
+         DataFrame API 层根据操作类型自动路由
+         多模态类型系统 (Image/Tensor/Embedding)
+         跨引擎查询优化
 ```
 
 ### 9.5 各阶段用户体验
 
-**阶段 1-2**（纯 SQL + Rust 扩展）：
+**阶段 1**（纯 SQL）：
 
 ```python
 session = Session("sr:9030")
@@ -532,7 +525,26 @@ docs = session.table("articles")
 docs.filter(col("content").match_phrase("machine learning")).show()
 ```
 
-**阶段 4**（StarRocks + Daft on Ray）：
+**阶段 2**（StarRocks + Daft POC）：
+
+```python
+session = Session("sr:9030")
+
+# StarRocks 查数据 → Daft 做 Python 处理 → 写回 StarRocks
+result = (
+    session.table("products")
+    .filter(col("category") == "electronics")
+    .map_batches(lambda df: df.with_column("text_len", df["name"].str.lengths()))
+    .to_starrocks("enriched_products")
+)
+
+# 分步操作
+daft_df = session.table("products").to_daft()
+processed = daft_df.with_column("score", sentiment_model(daft_df["description"]))
+session.write_daft(processed, "scored_products")
+```
+
+**阶段 4**（自动路由，最终形态）：
 
 ```python
 session = Session("sr:9030", ray="ray://head:10001")
@@ -574,23 +586,49 @@ Layer 1:  StarRocks 存储                     Object Storage (S3/OSS)
           (列存/索引/缓存)                     (Parquet/图片/模型)
 ```
 
-### 9.7 短期路线图补充
+### 9.7 阶段 2 POC 架构（MySQL 桥梁模式）
 
-在完成阶段 1（当前 Plan Phase 1-6）的同时，以下能力可以并行推进：
+阶段 2 先用 MySQL → pandas → Daft 验证混合管道的可行性，跳过 Arrow Flight：
 
-1. **Ibis 后端**: 开发 `ibis-starrocks` 后端插件，让 Ibis 用户也能使用 StarRocks。自研 SDK 提供 StarRocks 专有特性，Ibis 后端提供生态兼容性，两者共存。
-2. **Arrow Flight SQL**: 当 StarRocks 支持 Arrow Flight SQL 协议后，结果获取从 MySQL 协议切换到 Arrow Flight，数据全程保持 Arrow columnar 格式，无需行列转换。这也是阶段 3-4 的前置依赖。
-3. **Write 支持**: `df.write.to_table("target", mode="append")` — 通过 INSERT INTO SELECT 或 Stream Load 将 DataFrame 结果写入 StarRocks 表。
-4. **AI/ML 集成**: 与 LangChain、LlamaIndex 集成，让 LLM 通过 DataFrame API 操作 StarRocks 数据。
+```
+┌─────────────────────────────────────────────────────────┐
+│  用户代码                                               │
+│                                                         │
+│  df = session.table("source")                           │
+│      .filter(col("val") > 1.0)                          │
+│      .map_batches(my_transform)      # → Daft on Ray    │
+│      .to_starrocks("enriched")       # → 写回 StarRocks │
+└────────┬──────────────┬──────────────┬──────────────────┘
+         │              │              │
+    ①to_sql()     ②to_pandas()   ④write_daft()
+         │              │              │
+         ▼              ▼              ▼
+┌─────────────┐  ┌─────────────┐  ┌──────────────────┐
+│  StarRocks  │  │   pandas    │  │    StarRocks     │
+│  (MySQL)    │──│  DataFrame  │  │  INSERT INTO     │
+│  SELECT ... │  │  (桥梁)     │  │  VALUES (...)    │
+└─────────────┘  └──────┬──────┘  └──────────────────┘
+                        │                    ▲
+                   ③daft.from_pandas()       │
+                        │              ⑤daft_df.to_pandas()
+                        ▼                    │
+                 ┌──────────────┐     ┌──────┴──────┐
+                 │  Daft        │────▶│  Daft       │
+                 │  DataFrame   │     │  结果       │
+                 │  (on Ray)    │     │  DataFrame  │
+                 └──────────────┘     └─────────────┘
+                        │
+                 map_batches(func)
+                 Python UDF / 变换
+```
+
+阶段 3 引入 Arrow Flight 后，②③⑤ 的 pandas 中转将被 Arrow 零拷贝替代。
 
 ---
 
 ## 10. 开放问题（待讨论）
 
 1. **包名**: `starrocks-dataframe` vs `pystarrocks` vs `starrocks-python-sdk`？
-2. **是否支持 async**: Phase 1 不做，后续可加 `async_session`。
-3. **与现有 `starrocks` PyPI 包的关系**: 现有包是 SQLAlchemy dialect，新 SDK 互补而非替代。
-4. **DDL 支持**: Phase 1 不做，用 `session.execute("CREATE TABLE ...")` 即可。
-5. **Daft 集成时机**: 阶段 4 的 Daft on Ray 集成是否应在阶段 1 完成后立即启动？还是等 Arrow Flight SQL 就绪后再开始？
-6. **多模态类型系统**: DataFrame API 层是否需要在阶段 1 就预留 Image/Tensor/Embedding 类型标注，为阶段 4 做准备？
+2. **与现有 `starrocks` PyPI 包的关系**: 现有包是 SQLAlchemy dialect，新 SDK 互补而非替代。
+3. **多模态类型系统**: 阶段 4 需要 Image/Tensor/Embedding 类型标注，是否需要在阶段 2 就预留？
 

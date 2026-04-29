@@ -73,6 +73,57 @@ class Session:
         """Execute an arbitrary SQL statement."""
         return self._conn.execute(sql)
 
+    def write_daft(self, daft_df, table: str, mode: str = "append") -> int:
+        """Write a Daft DataFrame to a StarRocks table via INSERT INTO.
+
+        Args:
+            daft_df: A daft.DataFrame to write.
+            table: Target table name.
+            mode: "append" (INSERT INTO) or "overwrite" (TRUNCATE + INSERT).
+        Returns:
+            Number of rows written.
+        """
+        import pandas as pd
+        if isinstance(daft_df, pd.DataFrame):
+            pdf = daft_df
+        else:
+            pdf = daft_df.to_pandas()
+
+        if pdf.empty:
+            return 0
+
+        if mode == "overwrite":
+            self._conn.execute(f"TRUNCATE TABLE `{table}`")
+
+        columns = list(pdf.columns)
+        col_list = ", ".join(f"`{c}`" for c in columns)
+        total = 0
+        batch_size = 1000
+
+        for start in range(0, len(pdf), batch_size):
+            batch = pdf.iloc[start : start + batch_size]
+            value_rows = []
+            for _, row in batch.iterrows():
+                vals = []
+                for v in row:
+                    if v is None or (isinstance(v, float) and pd.isna(v)):
+                        vals.append("NULL")
+                    elif isinstance(v, str):
+                        escaped = v.replace("\\", "\\\\").replace("'", "\\'")
+                        vals.append(f"'{escaped}'")
+                    elif isinstance(v, (list, dict)):
+                        import json
+                        escaped = json.dumps(v).replace("\\", "\\\\").replace("'", "\\'")
+                        vals.append(f"'{escaped}'")
+                    else:
+                        vals.append(str(v))
+                value_rows.append(f"({', '.join(vals)})")
+            sql = f"INSERT INTO `{table}` ({col_list}) VALUES {', '.join(value_rows)}"
+            self._conn.execute(sql)
+            total += len(batch)
+
+        return total
+
     def close(self) -> None:
         self._conn.close()
 
