@@ -140,6 +140,19 @@ class Like(Expr):
 
 
 @dataclass(frozen=True)
+class MatchExpr(Expr):
+    """StarRocks MATCH expression: expr MATCH_PHRASE/MATCH_ALL/MATCH_ANY 'pattern'."""
+
+    expr: Expr
+    pattern: str
+    match_type: str  # "MATCH_PHRASE", "MATCH_ALL", "MATCH_ANY", "MATCH_PHRASE_PREFIX"
+
+    def to_sql(self) -> str:
+        escaped = self.pattern.replace("\\", "\\\\").replace("'", "\\'")
+        return f"{self.expr.to_sql()} {self.match_type} '{escaped}'"
+
+
+@dataclass(frozen=True)
 class CaseWhen(Expr):
     """CASE WHEN ... THEN ... ELSE ... END expression."""
 

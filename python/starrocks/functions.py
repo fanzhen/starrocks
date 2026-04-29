@@ -227,3 +227,45 @@ def lead(col: Column, offset: int = 1, default: object = None) -> Column:
     if default is not None:
         args.append(_to_col(default).expr)
     return Column(FunctionCall("LEAD", tuple(args)))
+
+
+# -- StarRocks-specific functions ---------------------------------------------
+
+def bitmap_union(col: Column) -> Column:
+    """BITMAP_UNION(col)."""
+    return Column(FunctionCall("BITMAP_UNION", (col.expr,)))
+
+
+def bitmap_count(col: Column) -> Column:
+    """BITMAP_COUNT(col)."""
+    return Column(FunctionCall("BITMAP_COUNT", (col.expr,)))
+
+
+def bitmap_union_count(col: Column) -> Column:
+    """BITMAP_UNION_COUNT(col)."""
+    return Column(FunctionCall("BITMAP_UNION_COUNT", (col.expr,)))
+
+
+def hll_union(col: Column) -> Column:
+    """HLL_UNION(col)."""
+    return Column(FunctionCall("HLL_UNION", (col.expr,)))
+
+
+def hll_union_agg(col: Column) -> Column:
+    """HLL_UNION_AGG(col)."""
+    return Column(FunctionCall("HLL_UNION_AGG", (col.expr,)))
+
+
+def approx_count_distinct(col_name: str) -> Column:
+    """APPROX_COUNT_DISTINCT(col)."""
+    return Column(FunctionCall("APPROX_COUNT_DISTINCT", (ColumnRef(col_name),)))
+
+
+def array_agg(col: Column) -> Column:
+    """ARRAY_AGG(col)."""
+    return Column(FunctionCall("ARRAY_AGG", (col.expr,)))
+
+
+def bm25(col: Column, query: str) -> Column:
+    """BM25(col, 'query') — StarRocks full-text search scoring."""
+    return Column(FunctionCall("BM25", (col.expr, Literal(query))))

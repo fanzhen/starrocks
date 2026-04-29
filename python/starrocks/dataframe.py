@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from starrocks.column import Column, col
 from starrocks.compiler.sql_compiler import SQLCompiler
-from starrocks.plan.expr import Alias, BinaryOp, ColumnRef, Expr
+from starrocks.plan.expr import Alias, BinaryOp, ColumnRef, Expr, FunctionCall, Literal
 from starrocks.plan.logical import (
     Aggregate,
     Distinct,
@@ -222,6 +222,17 @@ class DataFrame:
             else:
                 exprs.append(ColumnRef(name))
                 new_schema.append((name, dtype))
+        return DataFrame(
+            Projection(self._plan, exprs),
+            self._session,
+            schema=new_schema,
+        )
+
+    def with_bm25(self, col_name: str, query: str, alias_name: str = "score") -> DataFrame:
+        """Add a BM25 score column for full-text search ranking."""
+        exprs: list[Expr] = [ColumnRef(c) for c, _ in self._schema]
+        exprs.append(Alias(FunctionCall("BM25", (ColumnRef(col_name), Literal(query))), alias_name))
+        new_schema = list(self._schema) + [(alias_name, "DOUBLE")]
         return DataFrame(
             Projection(self._plan, exprs),
             self._session,

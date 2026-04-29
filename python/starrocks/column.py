@@ -11,6 +11,7 @@ from starrocks.plan.expr import (
     InList,
     Like,
     Literal,
+    MatchExpr,
     UnaryOp,
     WindowExpr,
 )
@@ -113,6 +114,22 @@ class Column:
 
     def like(self, pattern: str) -> Column:
         return Column(Like(self._expr, Literal(pattern)))
+
+    def match_phrase(self, pattern: str) -> Column:
+        """StarRocks MATCH_PHRASE predicate."""
+        return Column(MatchExpr(self._expr, pattern, "MATCH_PHRASE"))
+
+    def match_all(self, pattern: str) -> Column:
+        """StarRocks MATCH_ALL predicate."""
+        return Column(MatchExpr(self._expr, pattern, "MATCH_ALL"))
+
+    def match_any(self, pattern: str) -> Column:
+        """StarRocks MATCH_ANY predicate."""
+        return Column(MatchExpr(self._expr, pattern, "MATCH_ANY"))
+
+    def match_phrase_prefix(self, pattern: str) -> Column:
+        """StarRocks MATCH_PHRASE_PREFIX predicate."""
+        return Column(MatchExpr(self._expr, pattern, "MATCH_PHRASE_PREFIX"))
 
     # -- sort helpers (used in order_by) --------------------------------------
 

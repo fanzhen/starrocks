@@ -16,14 +16,17 @@ class LogicalPlan:
 
 @dataclass
 class TableScan(LogicalPlan):
-    """Scan a table by name, optionally in a specific database."""
+    """Scan a table by name, optionally in a specific database/catalog."""
 
     table_name: str
     database: str | None = None
     columns: list[str] | None = None
+    catalog: str | None = None
 
     @property
     def qualified_name(self) -> str:
+        if self.catalog and self.database:
+            return f"`{self.catalog}`.`{self.database}`.`{self.table_name}`"
         if self.database:
             return f"`{self.database}`.`{self.table_name}`"
         return f"`{self.table_name}`"
