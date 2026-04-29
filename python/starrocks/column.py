@@ -12,6 +12,7 @@ from starrocks.plan.expr import (
     Like,
     Literal,
     UnaryOp,
+    WindowExpr,
 )
 
 
@@ -120,6 +121,16 @@ class Column:
 
     def desc(self) -> Column:
         return Column(UnaryOp("DESC", self._expr, prefix=False))
+
+    # -- window function support -----------------------------------------------
+
+    def over(self, window: "Window") -> Column:
+        """Apply a window specification to this expression."""
+        return Column(WindowExpr(
+            self._expr,
+            partition_by=tuple(window._partition_exprs),
+            order_by=tuple(window._order_exprs),
+        ))
 
     # -- repr -----------------------------------------------------------------
 

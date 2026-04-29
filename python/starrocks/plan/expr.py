@@ -137,3 +137,40 @@ class Like(Expr):
 
     def to_sql(self) -> str:
         return f"{self.expr.to_sql()} LIKE {self.pattern.to_sql()}"
+
+
+@dataclass(frozen=True)
+class CaseWhen(Expr):
+    """CASE WHEN ... THEN ... ELSE ... END expression."""
+
+    conditions: tuple[tuple[Expr, Expr], ...]  # ((when_expr, then_expr), ...)
+    else_expr: Expr | None = None
+
+    def to_sql(self) -> str:
+        parts = ["CASE"]
+        for when_expr, then_expr in self.conditions:
+            parts.append(f"WHEN {when_expr.to_sql()} THEN {then_expr.to_sql()}")
+        if self.else_expr is not None:
+            parts.append(f"ELSE {self.else_expr.to_sql()}")
+        parts.append("END")
+        return " ".join(parts)
+
+
+@dataclass(frozen=True)
+class WindowExpr(Expr):
+    """Window function expression: func OVER (PARTITION BY ... ORDER BY ...)."""
+
+    func: Expr
+    partition_by: tuple[Expr, ...] = ()
+    order_by: tuple[Expr, ...] = ()
+
+    def to_sql(self) -> str:
+        parts: list[str] = []
+        if self.partition_by:
+            cols = ", ".join(e.to_sql() for e in self.partition_by)
+            parts.append(f"PARTITION BY {cols}")
+        if self.order_by:
+            cols = ", ".join(e.to_sql() for e in self.order_by)
+            parts.append(f"ORDER BY {cols}")
+        over_clause = " ".join(parts)
+        return f"{self.func.to_sql()} OVER ({over_clause})"

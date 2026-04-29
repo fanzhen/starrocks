@@ -6,8 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from starrocks.column import Column, col
 from starrocks.compiler.sql_compiler import SQLCompiler
-from starrocks.plan.expr import ColumnRef, Expr
-from starrocks.plan.expr import Alias, BinaryOp
+from starrocks.plan.expr import Alias, BinaryOp, ColumnRef, Expr
 from starrocks.plan.logical import (
     Aggregate,
     Distinct,
@@ -184,6 +183,51 @@ class DataFrame:
             schema=self._schema,
         )
 
+    def with_column(self, name: str, expr: Column) -> DataFrame:
+        """Add or replace a column expression."""
+        # Project all existing columns + the new one
+        exprs: list[Expr] = [ColumnRef(c) for c, _ in self._schema]
+        exprs.append(Alias(expr.expr, name))
+        new_schema = list(self._schema) + [(name, "UNKNOWN")]
+        return DataFrame(
+            Projection(self._plan, exprs),
+            self._session,
+            schema=new_schema,
+        )
+
+    def drop(self, *col_names: str) -> DataFrame:
+        """Remove columns by name."""
+        drop_set = set(col_names)
+        exprs: list[Expr] = []
+        new_schema: list[tuple[str, str]] = []
+        for name, dtype in self._schema:
+            if name not in drop_set:
+                exprs.append(ColumnRef(name))
+                new_schema.append((name, dtype))
+        return DataFrame(
+            Projection(self._plan, exprs),
+            self._session,
+            schema=new_schema,
+        )
+
+    def rename(self, mapping: dict[str, str]) -> DataFrame:
+        """Rename columns: {old_name: new_name}."""
+        exprs: list[Expr] = []
+        new_schema: list[tuple[str, str]] = []
+        for name, dtype in self._schema:
+            if name in mapping:
+                new_name = mapping[name]
+                exprs.append(Alias(ColumnRef(name), new_name))
+                new_schema.append((new_name, dtype))
+            else:
+                exprs.append(ColumnRef(name))
+                new_schema.append((name, dtype))
+        return DataFrame(
+            Projection(self._plan, exprs),
+            self._session,
+            schema=new_schema,
+        )
+
     def alias(self, name: str) -> DataFrame:
         """Give this DataFrame a table alias (for use in joins)."""
         return DataFrame(
@@ -274,6 +318,58 @@ class GroupedDataFrame:
         for e in agg_exprs:
             new_schema.append((_expr_name(e), "UNKNOWN"))
         return DataFrame(agg_plan, self._session, schema=new_schema)
+
+
+class _WindowMethod:
+    """Descriptor that works as both classmethod and instance method."""
+
+    def __init__(self, func):
+        self._func = func
+
+    def __get__(self, obj, cls=None):
+        if obj is None:
+            # Called on the class: Window.partition_by(...) / Window.order_by(...)
+            return lambda *args, **kwargs: self._func(cls(), *args, **kwargs)
+        # Called on an instance
+        return lambda *args, **kwargs: self._func(obj, *args, **kwargs)
+
+
+class Window:
+    """Window specification for window functions.
+
+    Supports both class-level and instance-level calls::
+
+        Window.partition_by("dept").order_by("salary")
+        Window.order_by("id")
+    """
+
+    def __init__(
+        self,
+        partition_exprs: list[Expr] | None = None,
+        order_exprs: list[Expr] | None = None,
+    ) -> None:
+        self._partition_exprs: list[Expr] = partition_exprs or []
+        self._order_exprs: list[Expr] = order_exprs or []
+
+    @_WindowMethod
+    def partition_by(self, *cols: str | Column) -> Window:
+        """Set PARTITION BY columns."""
+        return Window(
+            partition_exprs=[
+                ColumnRef(c) if isinstance(c, str) else c.expr for c in cols
+            ],
+            order_exprs=list(self._order_exprs),
+        )
+
+    @_WindowMethod
+    def order_by(self, *cols: str | Column) -> Window:
+        """Set ORDER BY columns."""
+        return Window(
+            partition_exprs=list(self._partition_exprs),
+            order_exprs=[
+                ColumnRef(c) if isinstance(c, str) else c.expr for c in cols
+            ],
+        )
 
 
 def _expr_name(expr: Expr) -> str:

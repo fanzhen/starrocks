@@ -200,3 +200,39 @@ class TestSQLCompiler:
         plan = Filter(joined, (col("amount") > 100).expr)
         sql = self.compiler.compile(plan)
         assert "WHERE" in sql
+
+    # -- Phase 4: expressions + functions + window -----------------------------
+
+    def test_case_when(self):
+        from starrocks.plan.expr import CaseWhen, Literal
+        expr = CaseWhen(
+            conditions=((BinaryOp(">", ColumnRef("a"), Literal(1)), Literal("yes")),),
+            else_expr=Literal("no"),
+        )
+        assert expr.to_sql() == "CASE WHEN `a` > 1 THEN 'yes' ELSE 'no' END"
+
+    def test_window_expr(self):
+        from starrocks.plan.expr import FunctionCall, WindowExpr
+        expr = WindowExpr(
+            func=FunctionCall("ROW_NUMBER"),
+            partition_by=(ColumnRef("dept"),),
+            order_by=(ColumnRef("salary"),),
+        )
+        assert expr.to_sql() == "ROW_NUMBER() OVER (PARTITION BY `dept` ORDER BY `salary`)"
+
+    def test_with_column(self):
+        scan = TableScan("t", columns=["a", "b"])
+        # Simulate with_column by building a Projection
+        from starrocks.plan.expr import Alias
+        plan = Projection(scan, [ColumnRef("a"), ColumnRef("b"), Alias(BinaryOp("+", ColumnRef("a"), ColumnRef("b")), "c")])
+        sql = self.compiler.compile(plan)
+        assert "`a`" in sql
+        assert "`b`" in sql
+        assert "AS `c`" in sql
+
+    def test_rename(self):
+        from starrocks.plan.expr import Alias
+        scan = TableScan("t")
+        plan = Projection(scan, [Alias(ColumnRef("old_name"), "new_name")])
+        sql = self.compiler.compile(plan)
+        assert "`old_name` AS `new_name`" in sql
