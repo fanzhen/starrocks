@@ -30,9 +30,56 @@ class TestToDaft:
         # Mock fetcher.execute_to_pandas to return a pandas DF
         mock_pdf = pd.DataFrame({"id": [1, 2, 3], "val": [1.1, 2.2, 3.3]})
         session.fetcher.execute_to_pandas.return_value = mock_pdf
+        # Default: no Arrow Flight connection (MySQL fallback)
+        session.arrow_connection = None
 
         plan = TableScan(table_name="t", columns=["id", "val"])
         return DataFrame(plan, session, schema=schema or [("id", "INT"), ("val", "DOUBLE")])
+
+    def test_to_arrow_uses_flight_when_available(self):
+        """to_arrow() should use Arrow Flight when arrow_connection is set."""
+        df = self._make_df()
+        mock_arrow_table = MagicMock()
+        df._session.arrow_connection = MagicMock()
+        df._session.arrow_connection.execute_to_arrow.return_value = mock_arrow_table
+
+        result = df.to_arrow()
+
+        df._session.arrow_connection.execute_to_arrow.assert_called_once()
+        assert result is mock_arrow_table
+
+    def test_to_arrow_fallback_to_mysql(self):
+        """to_arrow() should fallback to pandas when no Arrow Flight."""
+        df = self._make_df()
+        # arrow_connection is already None from _make_df
+        # This will fail without pyarrow, but we test the code path
+        try:
+            result = df.to_arrow()
+            # If pyarrow is installed, it should return a Table
+            import pyarrow as pa
+            assert isinstance(result, pa.Table)
+        except ImportError:
+            pass  # pyarrow not installed, skip
+
+    @patch("daft.from_pandas")
+    def test_to_daft_uses_arrow_when_available(self, mock_from_pandas):
+        """to_daft() should use Arrow Flight for zero-copy when available."""
+        df = self._make_df()
+        mock_arrow_table = MagicMock()
+        df._session.arrow_connection = MagicMock()
+        df._session.arrow_connection.execute_to_arrow.return_value = mock_arrow_table
+
+        daft_mod = sys.modules["daft"]
+        mock_daft_df = MagicMock()
+        daft_mod.from_arrow = MagicMock(return_value=mock_daft_df)
+
+        result = df.to_daft()
+
+        # Should use Arrow path
+        df._session.arrow_connection.execute_to_arrow.assert_called_once()
+        daft_mod.from_arrow.assert_called_once_with(mock_arrow_table)
+        # Should NOT use pandas fallback
+        mock_from_pandas.assert_not_called()
 
     @patch("daft.from_pandas")
     def test_to_daft_calls_to_pandas_then_daft(self, mock_from_pandas):
@@ -71,6 +118,7 @@ class TestWriteDaft:
         session._conn.execute.return_value = []
         session._fetcher = MagicMock()
         session._database = "test_db"
+        session._arrow_conn = None
         return session
 
     def test_write_daft_append(self):
@@ -196,6 +244,31 @@ class TestMapBatches:
     """Test DataFrame.map_batches()."""
 
     @patch("daft.from_pandas")
+    def test_map_batches_uses_arrow_when_available(self, mock_from_pandas):
+        """map_batches should use Arrow Flight when arrow_connection is set."""
+        from starrocks.dataframe import DataFrame
+        from starrocks.plan.logical import TableScan
+
+        session = MagicMock()
+        mock_arrow_table = MagicMock()
+        session.arrow_connection.execute_to_arrow.return_value = mock_arrow_table
+
+        mock_daft_df = MagicMock()
+        daft_mod = sys.modules["daft"]
+        daft_mod.from_arrow = MagicMock(return_value=mock_daft_df)
+
+        plan = TableScan(table_name="t", columns=["id", "val"])
+        df = DataFrame(plan, session, schema=[("id", "INT"), ("val", "DOUBLE")])
+
+        transform = MagicMock(return_value=mock_daft_df)
+        result = df.map_batches(transform)
+
+        # Should use Arrow path, not pandas path
+        session.arrow_connection.execute_to_arrow.assert_called_once()
+        daft_mod.from_arrow.assert_called_once_with(mock_arrow_table)
+        session.fetcher.execute_to_pandas.assert_not_called()
+
+    @patch("daft.from_pandas")
     def test_map_batches_with_callable(self, mock_from_pandas):
         """map_batches with a plain callable should apply it to the Daft DF."""
         from starrocks.dataframe import DataFrame
@@ -204,6 +277,7 @@ class TestMapBatches:
         session = MagicMock()
         mock_pdf = pd.DataFrame({"id": [1, 2], "val": [10.0, 20.0]})
         session.fetcher.execute_to_pandas.return_value = mock_pdf
+        session.arrow_connection = None
 
         mock_daft_df = MagicMock()
         mock_from_pandas.return_value = mock_daft_df

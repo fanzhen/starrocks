@@ -21,6 +21,7 @@ class Session:
         database: str | None = None,
         connect_timeout: int = 10,
         read_timeout: int = 300,
+        arrow_flight_port: int | None = None,
     ) -> None:
         self._conn = MySQLConnection(
             host=host, port=port, user=user, password=password,
@@ -29,6 +30,19 @@ class Session:
         )
         self._fetcher = ResultFetcher(self._conn)
         self._database = database
+
+        # Arrow Flight SQL connection (optional, for zero-copy data transfer)
+        self._arrow_conn = None
+        if arrow_flight_port is not None:
+            try:
+                from starrocks.connection.arrow_flight import ArrowFlightConnection
+                self._arrow_conn = ArrowFlightConnection(
+                    host=host, port=arrow_flight_port,
+                    user=user, password=password,
+                    database=database,
+                )
+            except ImportError:
+                pass  # adbc_driver_flightsql not installed
 
     @property
     def connection(self) -> MySQLConnection:
@@ -71,7 +85,15 @@ class Session:
 
     def execute(self, sql: str) -> list[dict[str, Any]]:
         """Execute an arbitrary SQL statement."""
-        return self._conn.execute(sql)
+        result = self._conn.execute(sql)
+        # Sync database context to Arrow Flight connection on USE statements
+        stripped = sql.strip().rstrip(";").strip()
+        if stripped.upper().startswith("USE "):
+            db_name = stripped[4:].strip().strip("`").strip('"').strip("'")
+            self._database = db_name
+            if self._arrow_conn is not None:
+                self._arrow_conn.set_database(db_name)
+        return result
 
     def write_daft(self, daft_df, table: str, mode: str = "append") -> int:
         """Write a Daft DataFrame to a StarRocks table via INSERT INTO.
@@ -124,8 +146,15 @@ class Session:
 
         return total
 
+    @property
+    def arrow_connection(self):
+        """Arrow Flight SQL connection, or None if not configured."""
+        return self._arrow_conn
+
     def close(self) -> None:
         self._conn.close()
+        if self._arrow_conn is not None:
+            self._arrow_conn.close()
 
     def _fetch_schema(self, table_name: str) -> list[tuple[str, str]]:
         """Return [(column_name, type_string), ...] for a table."""

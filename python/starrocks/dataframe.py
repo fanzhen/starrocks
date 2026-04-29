@@ -278,9 +278,18 @@ class DataFrame:
     def to_pandas(self, batch_size: int | None = None) -> Any:
         """Execute and return a pandas DataFrame.
 
+        Uses Arrow Flight SQL for zero-copy transfer when configured,
+        otherwise falls back to MySQL protocol.
+
         Args:
             batch_size: If set, fetch rows in batches to reduce memory usage.
+                        Only effective with MySQL protocol.
         """
+        arrow_conn = self._session.arrow_connection
+        if arrow_conn is not None and batch_size is None:
+            sql = self.to_sql()
+            arrow_table = arrow_conn.execute_to_arrow(sql)
+            return arrow_table.to_pandas()
         sql = self.to_sql()
         return self._session.fetcher.execute_to_pandas(sql, batch_size=batch_size)
 
@@ -301,12 +310,35 @@ class DataFrame:
         sql = self.to_sql()
         return self._session.fetcher.execute_explain(sql)
 
+    def to_arrow(self):
+        """Execute SQL on StarRocks and return a pyarrow.Table.
+
+        Uses Arrow Flight SQL for zero-copy transfer when configured,
+        otherwise falls back to MySQL + pandas conversion.
+        """
+        arrow_conn = self._session.arrow_connection
+        if arrow_conn is not None:
+            sql = self.to_sql()
+            return arrow_conn.execute_to_arrow(sql)
+        # Fallback: MySQL → pandas → pyarrow
+        import pyarrow as pa
+        pdf = self.to_pandas()
+        return pa.Table.from_pandas(pdf)
+
     def to_daft(self):
         """Execute SQL on StarRocks, convert result to a Daft DataFrame.
+
+        Uses Arrow Flight SQL for zero-copy transfer when configured
+        (StarRocks → Arrow Table → Daft), otherwise falls back to
+        MySQL → pandas → Daft.
 
         Returns a daft.DataFrame backed by the query results.
         """
         import daft
+        arrow_conn = self._session.arrow_connection
+        if arrow_conn is not None:
+            arrow_table = self.to_arrow()
+            return daft.from_arrow(arrow_table)
         pdf = self.to_pandas()
         return daft.from_pandas(pdf)
 
