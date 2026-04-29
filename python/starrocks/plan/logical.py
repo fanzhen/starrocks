@@ -1,0 +1,45 @@
+"""Logical plan nodes."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from starrocks.plan.expr import Expr
+
+
+class LogicalPlan:
+    """Base class for all logical plan nodes."""
+    pass
+
+
+@dataclass
+class TableScan(LogicalPlan):
+    """Scan a table by name, optionally in a specific database."""
+
+    table_name: str
+    database: str | None = None
+    columns: list[str] | None = None
+
+    @property
+    def qualified_name(self) -> str:
+        if self.database:
+            return f"`{self.database}`.`{self.table_name}`"
+        return f"`{self.table_name}`"
+
+
+@dataclass
+class Filter(LogicalPlan):
+    """Apply a predicate to the child plan."""
+
+    child: LogicalPlan
+    predicate: Expr
+
+
+@dataclass
+class Projection(LogicalPlan):
+    """Select specific columns / expressions from the child plan."""
+
+    child: LogicalPlan
+    expressions: list[Expr]

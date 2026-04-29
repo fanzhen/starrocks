@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "starrocks-dataframe"
+version = "0.1.0"
+description = "StarRocks DataFrame API — Python SDK for lazy query building and execution"
+requires-python = ">=3.10"
+dependencies = [
+    "pymysql>=1.1",
+]
+
+[project.optional-dependencies]
+pandas = ["pandas>=2.0"]
+all = ["pandas>=2.0", "pyarrow>=14.0"]
+dev = ["pytest>=7.0", "pandas>=2.0", "pyarrow>=14.0"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["starrocks*"]
