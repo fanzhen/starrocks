@@ -43,3 +43,35 @@ class Projection(LogicalPlan):
 
     child: LogicalPlan
     expressions: list[Expr]
+
+
+@dataclass
+class Aggregate(LogicalPlan):
+    """GROUP BY + aggregate expressions."""
+
+    child: LogicalPlan
+    group_keys: list[Expr]
+    agg_exprs: list[Expr]
+
+
+@dataclass
+class Sort(LogicalPlan):
+    """ORDER BY clause."""
+
+    child: LogicalPlan
+    sort_exprs: list[Expr]
+
+
+@dataclass
+class Limit(LogicalPlan):
+    """LIMIT clause."""
+
+    child: LogicalPlan
+    count: int
+
+
+@dataclass
+class Distinct(LogicalPlan):
+    """SELECT DISTINCT."""
+
+    child: LogicalPlan

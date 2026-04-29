@@ -7,7 +7,16 @@ from typing import TYPE_CHECKING, Any
 from starrocks.column import Column, col
 from starrocks.compiler.sql_compiler import SQLCompiler
 from starrocks.plan.expr import ColumnRef, Expr
-from starrocks.plan.logical import Filter, LogicalPlan, Projection, TableScan
+from starrocks.plan.logical import (
+    Aggregate,
+    Distinct,
+    Filter,
+    Limit,
+    LogicalPlan,
+    Projection,
+    Sort,
+    TableScan,
+)
 
 if TYPE_CHECKING:
     from starrocks.session import Session
@@ -83,6 +92,36 @@ class DataFrame:
             schema=new_schema,
         )
 
+    def group_by(self, *cols: str | Column) -> GroupedDataFrame:
+        """Group rows by one or more columns."""
+        exprs = [ColumnRef(c) if isinstance(c, str) else c.expr for c in cols]
+        return GroupedDataFrame(self._plan, self._session, exprs, self._schema)
+
+    def order_by(self, *cols: Column) -> DataFrame:
+        """Sort rows by one or more columns."""
+        sort_exprs = [c.expr for c in cols]
+        return DataFrame(
+            Sort(self._plan, sort_exprs),
+            self._session,
+            schema=self._schema,
+        )
+
+    def limit(self, count: int) -> DataFrame:
+        """Limit the number of rows returned."""
+        return DataFrame(
+            Limit(self._plan, count),
+            self._session,
+            schema=self._schema,
+        )
+
+    def distinct(self) -> DataFrame:
+        """Return distinct rows."""
+        return DataFrame(
+            Distinct(self._plan),
+            self._session,
+            schema=self._schema,
+        )
+
     # -- actions (trigger execution) ------------------------------------------
 
     def to_sql(self) -> str:
@@ -122,8 +161,39 @@ class DataFrame:
         return f"DataFrame(columns={self.columns})"
 
 
+class GroupedDataFrame:
+    """Intermediate object returned by ``DataFrame.group_by()``."""
+
+    def __init__(
+        self,
+        plan: LogicalPlan,
+        session: Session,
+        group_keys: list[Expr],
+        schema: list[tuple[str, str]],
+    ) -> None:
+        self._plan = plan
+        self._session = session
+        self._group_keys = group_keys
+        self._schema = schema
+
+    def agg(self, *agg_cols: Column) -> DataFrame:
+        """Apply aggregate functions and return a DataFrame."""
+        agg_exprs = [c.expr for c in agg_cols]
+        agg_plan = Aggregate(self._plan, self._group_keys, agg_exprs)
+        # Build schema from group keys + agg expressions
+        new_schema: list[tuple[str, str]] = []
+        for k in self._group_keys:
+            new_schema.append((_expr_name(k), "UNKNOWN"))
+        for e in agg_exprs:
+            new_schema.append((_expr_name(e), "UNKNOWN"))
+        return DataFrame(agg_plan, self._session, schema=new_schema)
+
+
 def _expr_name(expr: Expr) -> str:
     """Best-effort name extraction from an expression node."""
     if isinstance(expr, ColumnRef):
         return expr.name
+    from starrocks.plan.expr import Alias
+    if isinstance(expr, Alias):
+        return expr.alias_name
     return expr.to_sql()

@@ -46,6 +46,14 @@ class Literal(Expr):
 
 
 @dataclass(frozen=True)
+class Star(Expr):
+    """Represents * (all columns) or a raw SQL fragment."""
+
+    def to_sql(self) -> str:
+        return "*"
+
+
+@dataclass(frozen=True)
 class BinaryOp(Expr):
     """Binary operation: left <op> right."""
 
@@ -77,10 +85,12 @@ class FunctionCall(Expr):
 
     func_name: str
     args: tuple[Expr, ...] = ()
+    distinct: bool = False
 
     def to_sql(self) -> str:
         args_sql = ", ".join(a.to_sql() for a in self.args)
-        return f"{self.func_name}({args_sql})"
+        distinct_kw = "DISTINCT " if self.distinct else ""
+        return f"{self.func_name}({distinct_kw}{args_sql})"
 
 
 @dataclass(frozen=True)
