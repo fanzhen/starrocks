@@ -86,7 +86,7 @@ r6 = (df.select(
     col("id"),
     func.cosine_similarity(col("emb1"), col("emb2")).alias("sim")
 ).filter(col("sim") > 0.5).to_pandas())
-check("TC6: filter sim>0.5", len(r6) == 2)  # id=1 (sim=1.0), id=4 (sim=1.0)
+check("TC6: filter sim>0.5", len(r6) == 3)  # id=1 (1.0), id=3 (0.707), id=4 (1.0)
 
 # Cleanup
 session.execute("DROP TABLE IF EXISTS test_dataframe.vec_test")
