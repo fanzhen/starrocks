@@ -50,6 +50,28 @@ class Column:
     def alias(self, name: str) -> Column:
         return Column(Alias(self._expr, name))
 
+    # -- multimodal type annotation -------------------------------------------
+
+    def cast(self, target_type) -> Column:
+        """Annotate this column with a multimodal type (Image, Embedding, Tensor).
+
+        This attaches type metadata for Daft type mapping without changing
+        the underlying SQL expression.
+
+        Args:
+            target_type: An instance of Image, Embedding, or Tensor.
+        Returns:
+            A new Column with the type annotation attached.
+        """
+        from starrocks.types import Image, Embedding, Tensor
+        if not isinstance(target_type, (Image, Embedding, Tensor)):
+            raise TypeError(
+                f"cast() expects Image, Embedding, or Tensor, got {type(target_type).__name__}"
+            )
+        col = Column(self._expr)
+        col._multimodal_type = target_type
+        return col
+
     # -- comparison operators -------------------------------------------------
 
     def __eq__(self, other: object) -> Column:  # type: ignore[override]

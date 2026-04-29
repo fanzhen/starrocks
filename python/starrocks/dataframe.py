@@ -14,6 +14,7 @@ from starrocks.plan.logical import (
     Join,
     Limit,
     LogicalPlan,
+    MapBatches,
     Projection,
     SetOperation,
     Sort,
@@ -264,6 +265,26 @@ class DataFrame:
             return SubqueryAlias(self._plan, alias)
         return SubqueryAlias(self._plan, alias)
 
+    # -- internal helpers ------------------------------------------------------
+
+    def _has_map_batches(self) -> bool:
+        """Check if the logical plan contains any MapBatches node."""
+        return self._contains_map_batches(self._plan)
+
+    @staticmethod
+    def _contains_map_batches(node: LogicalPlan) -> bool:
+        if isinstance(node, MapBatches):
+            return True
+        child = getattr(node, "child", None)
+        if child is not None:
+            return DataFrame._contains_map_batches(child)
+        return False
+
+    def _execute_pipeline(self):
+        """Execute the hybrid pipeline via PipelineExecutor. Returns a Daft DataFrame."""
+        from starrocks.execution.pipeline import PipelineExecutor
+        return PipelineExecutor().execute(self._plan, self._session)
+
     # -- actions (trigger execution) ------------------------------------------
 
     def to_sql(self) -> str:
@@ -272,19 +293,29 @@ class DataFrame:
 
     def show(self, limit: int = 20) -> None:
         """Execute and pretty-print results."""
+        if self._has_map_batches():
+            daft_df = self._execute_pipeline()
+            daft_df.show(limit)
+            return
         sql = self.to_sql()
         self._session.fetcher.execute_show(sql, limit=limit)
 
     def to_pandas(self, batch_size: int | None = None) -> Any:
         """Execute and return a pandas DataFrame.
 
+        If the plan contains MapBatches nodes, the pipeline executor runs
+        the hybrid SQL+Daft pipeline automatically.
+
         Uses Arrow Flight SQL for zero-copy transfer when configured,
         otherwise falls back to MySQL protocol.
 
         Args:
             batch_size: If set, fetch rows in batches to reduce memory usage.
-                        Only effective with MySQL protocol.
+                        Only effective with MySQL protocol (pure SQL path).
         """
+        if self._has_map_batches():
+            daft_df = self._execute_pipeline()
+            return daft_df.to_pandas()
         arrow_conn = self._session.arrow_connection
         if arrow_conn is not None and batch_size is None:
             sql = self.to_sql()
@@ -295,12 +326,21 @@ class DataFrame:
 
     def count(self) -> int:
         """Return the number of rows."""
+        if self._has_map_batches():
+            daft_df = self._execute_pipeline()
+            return len(daft_df.to_pandas())
         sql = self.to_sql()
         count_sql = f"SELECT COUNT(*) AS cnt FROM ({sql}) _t"
         return self._session.fetcher.execute_count(count_sql)
 
     def first(self) -> dict[str, Any] | None:
         """Return the first row as a dict, or None."""
+        if self._has_map_batches():
+            daft_df = self._execute_pipeline()
+            pdf = daft_df.limit(1).to_pandas()
+            if pdf.empty:
+                return None
+            return pdf.iloc[0].to_dict()
         sql = self.to_sql()
         rows = self._session.fetcher.execute_to_dicts(f"{sql} LIMIT 1")
         return rows[0] if rows else None
@@ -316,6 +356,10 @@ class DataFrame:
         Uses Arrow Flight SQL for zero-copy transfer when configured,
         otherwise falls back to MySQL + pandas conversion.
         """
+        if self._has_map_batches():
+            import pyarrow as pa
+            daft_df = self._execute_pipeline()
+            return pa.Table.from_pandas(daft_df.to_pandas())
         arrow_conn = self._session.arrow_connection
         if arrow_conn is not None:
             sql = self.to_sql()
@@ -326,14 +370,15 @@ class DataFrame:
         return pa.Table.from_pandas(pdf)
 
     def to_daft(self):
-        """Execute SQL on StarRocks, convert result to a Daft DataFrame.
+        """Execute and return a Daft DataFrame.
 
-        Uses Arrow Flight SQL for zero-copy transfer when configured
-        (StarRocks → Arrow Table → Daft), otherwise falls back to
-        MySQL → pandas → Daft.
+        If the plan contains MapBatches nodes, the pipeline executor
+        handles hybrid SQL+Daft execution automatically.
 
-        Returns a daft.DataFrame backed by the query results.
+        Otherwise, executes SQL on StarRocks and converts results to Daft.
         """
+        if self._has_map_batches():
+            return self._execute_pipeline()
         import daft
         arrow_conn = self._session.arrow_connection
         if arrow_conn is not None:
@@ -342,33 +387,52 @@ class DataFrame:
         pdf = self.to_pandas()
         return daft.from_pandas(pdf)
 
-    def map_batches(self, func, *, result_columns=None):
-        """Execute SQL on StarRocks, then apply a Python function via Daft.
+    def map_batches(self, func, *, result_columns=None) -> DataFrame:
+        """Apply a Python UDF via Daft (lazy transformation).
 
-        This is an action that triggers execution:
-        1. Compile and execute the SQL query on StarRocks
-        2. Convert results to a Daft DataFrame
-        3. Apply func via Daft map_batches
+        Returns a new DataFrame with a MapBatches logical node. Execution
+        is deferred until an action (to_pandas, show, etc.) is called,
+        at which point the pipeline executor auto-routes SQL segments to
+        StarRocks and UDF segments to Daft.
 
         Args:
             func: A Python callable or Daft UDF to apply.
             result_columns: Optional dict of {col_name: daft.DataType} for output schema.
-                           If None, func is applied via with_columns_batched.
         Returns:
-            A DaftDataFrame wrapping the Daft result.
+            A new DataFrame containing the MapBatches transformation.
         """
-        from starrocks.daft_utils import DaftDataFrame
-        daft_df = self.to_daft()
-        if result_columns is not None:
-            import daft
-            expressions = [
-                daft.col(name).apply(func, return_dtype=dtype)
-                for name, dtype in result_columns.items()
-            ]
-            daft_df = daft_df.with_columns(*expressions)
-        else:
-            daft_df = func(daft_df)
-        return DaftDataFrame(daft_df, self._session)
+        return DataFrame(
+            MapBatches(self._plan, func=func, result_columns=result_columns),
+            self._session,
+            schema=self._schema,
+        )
+
+    def to_starrocks(self, table: str, mode: str = "append") -> int:
+        """Write results to a StarRocks table.
+
+        If the plan contains MapBatches nodes, the pipeline executor runs
+        first to produce a Daft DataFrame, which is then written via INSERT INTO.
+        Otherwise, uses INSERT INTO ... SELECT.
+
+        Args:
+            table: Target table name.
+            mode: "append" (INSERT INTO) or "overwrite" (TRUNCATE + INSERT).
+        Returns:
+            Number of rows written.
+        """
+        if self._has_map_batches():
+            from starrocks.execution.pipeline import PipelineExecutor
+            daft_df = PipelineExecutor().execute(self._plan, self._session)
+            return self._session.write_daft(daft_df, table, mode=mode)
+        # Pure SQL path: INSERT INTO ... SELECT
+        sql = self.to_sql()
+        if mode == "overwrite":
+            self._session.connection.execute(f"TRUNCATE TABLE `{table}`")
+        insert_sql = f"INSERT INTO `{table}` {sql}"
+        self._session.connection.execute(insert_sql)
+        # Return approximate count
+        result = self._session.connection.execute(f"SELECT COUNT(*) AS cnt FROM `{table}`")
+        return result[0].get("cnt", 0) if result else 0
 
     # -- repr -----------------------------------------------------------------
 

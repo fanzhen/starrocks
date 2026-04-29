@@ -241,36 +241,32 @@ class TestDaftDataFrame:
 # ---------------------------------------------------------------------------
 
 class TestMapBatches:
-    """Test DataFrame.map_batches()."""
+    """Test DataFrame.map_batches() — now lazy (returns DataFrame with MapBatches node)."""
 
-    @patch("daft.from_pandas")
-    def test_map_batches_uses_arrow_when_available(self, mock_from_pandas):
-        """map_batches should use Arrow Flight when arrow_connection is set."""
+    def test_map_batches_is_lazy(self):
+        """map_batches should return a new DataFrame, not execute immediately."""
         from starrocks.dataframe import DataFrame
-        from starrocks.plan.logical import TableScan
+        from starrocks.plan.logical import MapBatches, TableScan
 
         session = MagicMock()
-        mock_arrow_table = MagicMock()
-        session.arrow_connection.execute_to_arrow.return_value = mock_arrow_table
-
-        mock_daft_df = MagicMock()
-        daft_mod = sys.modules["daft"]
-        daft_mod.from_arrow = MagicMock(return_value=mock_daft_df)
+        session.arrow_connection = None
 
         plan = TableScan(table_name="t", columns=["id", "val"])
         df = DataFrame(plan, session, schema=[("id", "INT"), ("val", "DOUBLE")])
 
-        transform = MagicMock(return_value=mock_daft_df)
+        transform = MagicMock()
         result = df.map_batches(transform)
 
-        # Should use Arrow path, not pandas path
-        session.arrow_connection.execute_to_arrow.assert_called_once()
-        daft_mod.from_arrow.assert_called_once_with(mock_arrow_table)
+        # Should NOT execute anything yet
         session.fetcher.execute_to_pandas.assert_not_called()
+        # Should return a DataFrame with MapBatches node
+        assert isinstance(result, DataFrame)
+        assert isinstance(result._plan, MapBatches)
+        assert result._plan.func is transform
 
     @patch("daft.from_pandas")
-    def test_map_batches_with_callable(self, mock_from_pandas):
-        """map_batches with a plain callable should apply it to the Daft DF."""
+    def test_map_batches_executes_on_action(self, mock_from_pandas):
+        """map_batches should execute via pipeline when an action is called."""
         from starrocks.dataframe import DataFrame
         from starrocks.plan.logical import TableScan
 
@@ -280,6 +276,7 @@ class TestMapBatches:
         session.arrow_connection = None
 
         mock_daft_df = MagicMock()
+        mock_daft_df.to_pandas.return_value = mock_pdf
         mock_from_pandas.return_value = mock_daft_df
 
         plan = TableScan(table_name="t", columns=["id", "val"])
@@ -288,6 +285,9 @@ class TestMapBatches:
         transform = MagicMock(return_value=mock_daft_df)
         result = df.map_batches(transform)
 
-        transform.assert_called_once_with(mock_daft_df)
-        assert result._daft_df is mock_daft_df
-        assert result._session is session
+        # Trigger execution via to_pandas
+        pdf = result.to_pandas()
+
+        # Now the UDF should have been called
+        transform.assert_called_once()
+        assert isinstance(pdf, pd.DataFrame)

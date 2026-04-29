@@ -22,6 +22,7 @@ class Session:
         connect_timeout: int = 10,
         read_timeout: int = 300,
         arrow_flight_port: int | None = None,
+        ray: str | None = None,
     ) -> None:
         self._conn = MySQLConnection(
             host=host, port=port, user=user, password=password,
@@ -43,6 +44,18 @@ class Session:
                 )
             except ImportError:
                 pass  # adbc_driver_flightsql not installed
+
+        # Ray cluster connection (optional, for distributed Daft execution)
+        self._ray_conn = None
+        if ray is not None:
+            try:
+                from starrocks.connection.ray_cluster import RayConnection
+                self._ray_conn = RayConnection(address=ray)
+                # Configure Daft to use Ray runner
+                import daft
+                daft.context.set_runner_ray()
+            except ImportError:
+                pass  # ray or daft not installed
 
     @property
     def connection(self) -> MySQLConnection:
@@ -151,10 +164,17 @@ class Session:
         """Arrow Flight SQL connection, or None if not configured."""
         return self._arrow_conn
 
+    @property
+    def ray_connection(self):
+        """Ray cluster connection, or None if not configured."""
+        return self._ray_conn
+
     def close(self) -> None:
         self._conn.close()
         if self._arrow_conn is not None:
             self._arrow_conn.close()
+        if self._ray_conn is not None:
+            self._ray_conn.shutdown()
 
     def _fetch_schema(self, table_name: str) -> list[tuple[str, str]]:
         """Return [(column_name, type_string), ...] for a table."""

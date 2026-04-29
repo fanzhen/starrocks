@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from starrocks.plan.expr import Expr
@@ -112,3 +112,16 @@ class SubqueryAlias(LogicalPlan):
 
     child: LogicalPlan
     alias: str
+
+
+@dataclass
+class MapBatches(LogicalPlan):
+    """Apply a Python UDF via Daft map_batches.
+
+    This is a lazy transformation node. Execution is deferred until an
+    action (to_pandas, show, etc.) triggers the pipeline executor.
+    """
+
+    child: LogicalPlan
+    func: Callable
+    result_columns: dict | None = None
