@@ -80,12 +80,12 @@ check("TC5: group count", len(r5) == 2)
 # group 'a': (1.0 + 0.0) / 2 = 0.5
 check("TC5: group a avg=0.5", abs(r5.iloc[0]["avg_sim"] - 0.5) < 1e-5)
 
-# TC6: filter by vector similarity
+# TC6: filter by vector similarity (filter on alias from inner select)
 print("--- TC6: filter by similarity ---")
 r6 = (df.select(
     col("id"),
     func.cosine_similarity(col("emb1"), col("emb2")).alias("sim")
-).filter(func.cosine_similarity(col("emb1"), col("emb2")) > 0.5).to_pandas())
+).filter(col("sim") > 0.5).to_pandas())
 check("TC6: filter sim>0.5", len(r6) == 2)  # id=1 (sim=1.0), id=4 (sim=1.0)
 
 # Cleanup
