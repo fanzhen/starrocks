@@ -6,26 +6,57 @@ from starrocks.plan.logical import (
     Aggregate,
     Distinct,
     Filter,
+    Join,
     Limit,
     LogicalPlan,
     Projection,
+    RawSQL,
+    SetOperation,
     Sort,
+    SubqueryAlias,
     TableScan,
 )
+
+_JOIN_TYPE_MAP = {
+    "inner": "INNER JOIN",
+    "left": "LEFT JOIN",
+    "right": "RIGHT JOIN",
+    "full": "FULL OUTER JOIN",
+    "cross": "CROSS JOIN",
+}
 
 
 class SQLCompiler:
     """Compile a ``LogicalPlan`` tree into a SQL query string.
 
-    The compiler walks the plan tree top-down, collecting SQL clauses.
-    The tree is always rooted at a TableScan and layers are stacked on top:
-
-        Limit → Sort → Projection/Distinct → Aggregate → Filter → TableScan
-
-    Any ordering is supported; the compiler peels layers in order.
+    Uses recursive compilation: each node type knows how to render itself,
+    and complex sub-plans are wrapped as subqueries when needed.
     """
 
+    def __init__(self) -> None:
+        self._alias_counter = 0
+
     def compile(self, plan: LogicalPlan) -> str:
+        self._alias_counter = 0
+        return self._compile(plan)
+
+    def _next_alias(self) -> str:
+        self._alias_counter += 1
+        return f"_t{self._alias_counter}"
+
+    def _compile(self, plan: LogicalPlan) -> str:
+        # SetOperation (UNION) — handle before the single-stream peel
+        if isinstance(plan, SetOperation):
+            return self._compile_set_op(plan)
+
+        # Join — two children
+        if isinstance(plan, Join):
+            return self._compile_join(plan)
+
+        # Single-stream plan: peel layers top-down
+        return self._compile_single(plan)
+
+    def _compile_single(self, plan: LogicalPlan) -> str:
         node = plan
 
         limit_clause = ""
@@ -51,7 +82,6 @@ class SQLCompiler:
         if isinstance(node, Distinct):
             distinct = True
             node = node.child
-            # Distinct may wrap a Projection
             if isinstance(node, Projection):
                 select_exprs = ", ".join(e.to_sql() for e in node.expressions)
                 node = node.child
@@ -72,18 +102,45 @@ class SQLCompiler:
             where_clause = f" WHERE {node.predicate.to_sql()}"
             node = node.child
 
-        # Leaf must be TableScan
-        if not isinstance(node, TableScan):
-            raise ValueError(f"Unsupported plan node at leaf: {type(node).__name__}")
-
-        from_clause = node.qualified_name
+        # Leaf: TableScan, RawSQL, SubqueryAlias, Join, or SetOperation
+        from_clause = self._compile_source(node)
 
         # Build SELECT
-        if agg_select is not None:
-            final_select = agg_select
-        else:
-            final_select = select_exprs
-
+        final_select = agg_select if agg_select is not None else select_exprs
         distinct_kw = "DISTINCT " if distinct else ""
-        sql = f"SELECT {distinct_kw}{final_select} FROM {from_clause}{where_clause}{group_clause}{order_clause}{limit_clause}"
-        return sql
+        return f"SELECT {distinct_kw}{final_select} FROM {from_clause}{where_clause}{group_clause}{order_clause}{limit_clause}"
+
+    def _compile_source(self, node: LogicalPlan) -> str:
+        """Compile a leaf/source node into a FROM-clause fragment."""
+        if isinstance(node, TableScan):
+            return node.qualified_name
+        if isinstance(node, RawSQL):
+            alias = self._next_alias()
+            return f"({node.query}) {alias}"
+        if isinstance(node, SubqueryAlias):
+            inner = self._compile(node.child)
+            return f"({inner}) `{node.alias}`"
+        if isinstance(node, (Join, SetOperation)):
+            # A join or union used as a source for further operations
+            inner = self._compile(node)
+            alias = self._next_alias()
+            return f"({inner}) {alias}"
+        raise ValueError(f"Unsupported plan node at leaf: {type(node).__name__}")
+
+    def _compile_join(self, plan: Join) -> str:
+        """Compile a JOIN node."""
+        left_sql = self._compile_source(plan.left)
+        right_sql = self._compile_source(plan.right)
+        join_type = _JOIN_TYPE_MAP.get(plan.how, "INNER JOIN")
+
+        if plan.on is not None:
+            on_sql = plan.on.to_sql()
+            return f"SELECT * FROM {left_sql} {join_type} {right_sql} ON {on_sql}"
+        else:
+            return f"SELECT * FROM {left_sql} {join_type} {right_sql}"
+
+    def _compile_set_op(self, plan: SetOperation) -> str:
+        """Compile a UNION / UNION ALL / etc."""
+        left_sql = self._compile(plan.left)
+        right_sql = self._compile(plan.right)
+        return f"{left_sql} {plan.op} {right_sql}"

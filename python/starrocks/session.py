@@ -47,8 +47,17 @@ class Session:
         return DataFrame(plan, self, schema=schema)
 
     def sql(self, query: str) -> "DataFrame":
-        """Create a DataFrame from a raw SQL query (future Phase 3)."""
-        raise NotImplementedError("Session.sql() will be available in Phase 3")
+        """Create a DataFrame from a raw SQL query.
+
+        The query is wrapped as a subquery and can be further
+        transformed with DataFrame operations.
+        """
+        from starrocks.dataframe import DataFrame
+        from starrocks.plan.logical import RawSQL
+
+        # Infer schema by running DESCRIBE on the query
+        schema = self._fetch_query_schema(query)
+        return DataFrame(RawSQL(query), self, schema=schema)
 
     def execute(self, sql: str) -> list[dict[str, Any]]:
         """Execute an arbitrary SQL statement."""
@@ -66,3 +75,8 @@ class Session:
             col_type = row.get("Type") or row.get("type") or ""
             schema.append((str(col_name), normalize_type(str(col_type))))
         return schema
+
+    def _fetch_query_schema(self, query: str) -> list[tuple[str, str]]:
+        """Infer schema from a SQL query by executing LIMIT 0."""
+        _, desc = self._conn.execute_raw(f"SELECT * FROM ({query}) _q LIMIT 0")
+        return [(str(d[0]), "UNKNOWN") for d in desc]

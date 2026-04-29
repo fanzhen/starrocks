@@ -7,14 +7,18 @@ from typing import TYPE_CHECKING, Any
 from starrocks.column import Column, col
 from starrocks.compiler.sql_compiler import SQLCompiler
 from starrocks.plan.expr import ColumnRef, Expr
+from starrocks.plan.expr import Alias, BinaryOp
 from starrocks.plan.logical import (
     Aggregate,
     Distinct,
     Filter,
+    Join,
     Limit,
     LogicalPlan,
     Projection,
+    SetOperation,
     Sort,
+    SubqueryAlias,
     TableScan,
 )
 
@@ -121,6 +125,89 @@ class DataFrame:
             self._session,
             schema=self._schema,
         )
+
+    def join(
+        self,
+        other: DataFrame,
+        on: str | Column | None = None,
+        how: str = "inner",
+    ) -> DataFrame:
+        """Join with another DataFrame.
+
+        Args:
+            other: Right-side DataFrame.
+            on: Join key — column name (str) or expression (Column).
+            how: Join type — "inner", "left", "right", "full", "cross".
+        """
+        if isinstance(on, str):
+            # Simple equi-join on a shared column name
+            left_alias = self._table_alias() or "_l"
+            right_alias = other._table_alias() or "_r"
+            on_expr = BinaryOp(
+                "=",
+                ColumnRef(on, table_alias=left_alias),
+                ColumnRef(on, table_alias=right_alias),
+            )
+            left_plan = self._ensure_aliased(left_alias)
+            right_plan = other._ensure_aliased(right_alias)
+        elif isinstance(on, Column):
+            on_expr = on.expr
+            left_plan = self._plan
+            right_plan = other._plan
+        elif on is None:
+            on_expr = None
+            left_plan = self._plan
+            right_plan = other._plan
+        else:
+            raise TypeError(f"join on= expects str or Column, got {type(on)}")
+
+        merged_schema = list(self._schema) + list(other._schema)
+        return DataFrame(
+            Join(left_plan, right_plan, on=on_expr, how=how),
+            self._session,
+            schema=merged_schema,
+        )
+
+    def union(self, other: DataFrame) -> DataFrame:
+        """UNION ALL with another DataFrame."""
+        return DataFrame(
+            SetOperation(self._plan, other._plan, op="UNION ALL"),
+            self._session,
+            schema=self._schema,
+        )
+
+    def union_distinct(self, other: DataFrame) -> DataFrame:
+        """UNION DISTINCT with another DataFrame."""
+        return DataFrame(
+            SetOperation(self._plan, other._plan, op="UNION DISTINCT"),
+            self._session,
+            schema=self._schema,
+        )
+
+    def alias(self, name: str) -> DataFrame:
+        """Give this DataFrame a table alias (for use in joins)."""
+        return DataFrame(
+            SubqueryAlias(self._plan, name),
+            self._session,
+            schema=self._schema,
+        )
+
+    def _table_alias(self) -> str | None:
+        """Extract a simple table name for aliasing, if possible."""
+        if isinstance(self._plan, TableScan):
+            return self._plan.table_name
+        if isinstance(self._plan, SubqueryAlias):
+            return self._plan.alias
+        return None
+
+    def _ensure_aliased(self, alias: str) -> LogicalPlan:
+        """Wrap the plan in a SubqueryAlias if it isn't one already."""
+        if isinstance(self._plan, SubqueryAlias):
+            return self._plan
+        if isinstance(self._plan, TableScan):
+            # TableScan uses its own name, wrap for explicit alias
+            return SubqueryAlias(self._plan, alias)
+        return SubqueryAlias(self._plan, alias)
 
     # -- actions (trigger execution) ------------------------------------------
 

@@ -6,7 +6,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from starrocks.column import col
 from starrocks.compiler.sql_compiler import SQLCompiler
 from starrocks.plan.expr import ColumnRef
-from starrocks.plan.logical import Aggregate, Distinct, Filter, Limit, Projection, Sort, TableScan
+from starrocks.plan.expr import BinaryOp
+from starrocks.plan.logical import (
+    Aggregate, Distinct, Filter, Join, Limit, Projection, RawSQL,
+    SetOperation, Sort, SubqueryAlias, TableScan,
+)
 
 
 class TestSQLCompiler:
@@ -135,3 +139,64 @@ class TestSQLCompiler:
         assert "GROUP BY" in sql
         assert "ORDER BY" in sql
         assert "LIMIT 10" in sql
+
+    # -- Phase 3: join, union, raw SQL ----------------------------------------
+
+    def test_inner_join(self):
+        left = TableScan("orders")
+        right = TableScan("customers")
+        on = BinaryOp("=", ColumnRef("cust_id", "orders"), ColumnRef("cust_id", "customers"))
+        plan = Join(left, right, on=on, how="inner")
+        sql = self.compiler.compile(plan)
+        assert "INNER JOIN" in sql
+        assert "ON" in sql
+
+    def test_left_join(self):
+        left = TableScan("orders")
+        right = TableScan("customers")
+        on = BinaryOp("=", ColumnRef("cust_id", "orders"), ColumnRef("cust_id", "customers"))
+        plan = Join(left, right, on=on, how="left")
+        sql = self.compiler.compile(plan)
+        assert "LEFT JOIN" in sql
+
+    def test_cross_join(self):
+        left = TableScan("a")
+        right = TableScan("b")
+        plan = Join(left, right, on=None, how="cross")
+        sql = self.compiler.compile(plan)
+        assert "CROSS JOIN" in sql
+
+    def test_union_all(self):
+        left = TableScan("t1")
+        right = TableScan("t2")
+        plan = SetOperation(left, right, op="UNION ALL")
+        sql = self.compiler.compile(plan)
+        assert "UNION ALL" in sql
+
+    def test_union_distinct(self):
+        left = TableScan("t1")
+        right = TableScan("t2")
+        plan = SetOperation(left, right, op="UNION DISTINCT")
+        sql = self.compiler.compile(plan)
+        assert "UNION DISTINCT" in sql
+
+    def test_raw_sql(self):
+        plan = RawSQL("SELECT 1 AS x")
+        sql = self.compiler.compile(plan)
+        assert "SELECT 1 AS x" in sql
+
+    def test_subquery_alias(self):
+        inner = TableScan("orders")
+        plan = SubqueryAlias(inner, "o")
+        sql = self.compiler.compile(plan)
+        assert "`o`" in sql
+
+    def test_filter_on_join(self):
+        """Filter applied on top of a join."""
+        left = TableScan("orders")
+        right = TableScan("customers")
+        on = BinaryOp("=", ColumnRef("cust_id", "orders"), ColumnRef("cust_id", "customers"))
+        joined = Join(left, right, on=on)
+        plan = Filter(joined, (col("amount") > 100).expr)
+        sql = self.compiler.compile(plan)
+        assert "WHERE" in sql

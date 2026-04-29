@@ -75,3 +75,37 @@ class Distinct(LogicalPlan):
     """SELECT DISTINCT."""
 
     child: LogicalPlan
+
+
+@dataclass
+class Join(LogicalPlan):
+    """JOIN two plans."""
+
+    left: LogicalPlan
+    right: LogicalPlan
+    on: Expr | None = None
+    how: str = "inner"  # inner, left, right, full, cross
+
+
+@dataclass
+class SetOperation(LogicalPlan):
+    """UNION / UNION ALL / INTERSECT / EXCEPT."""
+
+    left: LogicalPlan
+    right: LogicalPlan
+    op: str = "UNION ALL"  # "UNION ALL", "UNION DISTINCT"
+
+
+@dataclass
+class RawSQL(LogicalPlan):
+    """A raw SQL query as a leaf node."""
+
+    query: str
+
+
+@dataclass
+class SubqueryAlias(LogicalPlan):
+    """Wrap a child plan with a table alias."""
+
+    child: LogicalPlan
+    alias: str
