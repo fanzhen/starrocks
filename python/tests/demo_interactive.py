@@ -19,8 +19,9 @@ from starrocks.dataframe import Window
 
 # ── 连接 ──────────────────────────────────────────────────
 host = os.getenv("SR_HOST", "127.0.0.1")
-session = Session(host=host, port=9030, user="root", database="demo")
+session = Session(host=host, port=9030, user="root")
 session.execute("CREATE DATABASE IF NOT EXISTS demo")
+session.execute("USE demo")
 print(f"Connected to StarRocks @ {host}:9030\n")
 
 # ── 建表 & 灌数据 ─────────────────────────────────────────
