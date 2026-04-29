@@ -120,12 +120,11 @@ class SQLCompiler:
         if isinstance(node, SubqueryAlias):
             inner = self._compile(node.child)
             return f"({inner}) `{node.alias}`"
-        if isinstance(node, (Join, SetOperation)):
-            # A join or union used as a source for further operations
-            inner = self._compile(node)
-            alias = self._next_alias()
-            return f"({inner}) {alias}"
-        raise ValueError(f"Unsupported plan node at leaf: {type(node).__name__}")
+        # Any other plan node (Join, SetOperation, Projection, Filter, etc.)
+        # gets wrapped as a subquery
+        inner = self._compile(node)
+        alias = self._next_alias()
+        return f"({inner}) {alias}"
 
     def _compile_join(self, plan: Join) -> str:
         """Compile a JOIN node."""
