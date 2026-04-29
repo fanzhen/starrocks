@@ -275,10 +275,14 @@ class DataFrame:
         sql = self.to_sql()
         self._session.fetcher.execute_show(sql, limit=limit)
 
-    def to_pandas(self) -> Any:
-        """Execute and return a pandas DataFrame."""
+    def to_pandas(self, batch_size: int | None = None) -> Any:
+        """Execute and return a pandas DataFrame.
+
+        Args:
+            batch_size: If set, fetch rows in batches to reduce memory usage.
+        """
         sql = self.to_sql()
-        return self._session.fetcher.execute_to_pandas(sql)
+        return self._session.fetcher.execute_to_pandas(sql, batch_size=batch_size)
 
     def count(self) -> int:
         """Return the number of rows."""

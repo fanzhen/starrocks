@@ -7,6 +7,18 @@ name = "starrocks-dataframe"
 version = "0.1.0"
 description = "StarRocks DataFrame API — Python SDK for lazy query building and execution"
 requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Database",
+    "Topic :: Scientific/Engineering",
+]
 dependencies = [
     "pymysql>=1.1",
 ]
@@ -14,8 +26,15 @@ dependencies = [
 [project.optional-dependencies]
 pandas = ["pandas>=2.0"]
 all = ["pandas>=2.0", "pyarrow>=14.0"]
-dev = ["pytest>=7.0", "pandas>=2.0", "pyarrow>=14.0"]
+dev = ["pytest>=7.0", "pytest-cov>=4.0", "pandas>=2.0", "pyarrow>=14.0"]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["starrocks*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["starrocks"]
+omit = ["tests/*"]

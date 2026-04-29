@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 from typing import Any
 
 from starrocks.connection.mysql import MySQLConnection
@@ -17,12 +16,28 @@ class ResultFetcher:
     def execute_to_dicts(self, sql: str) -> list[dict[str, Any]]:
         return self._conn.execute(sql)
 
-    def execute_to_pandas(self, sql: str) -> Any:
-        """Execute and return a pandas DataFrame."""
+    def execute_to_pandas(self, sql: str, batch_size: int | None = None) -> Any:
+        """Execute and return a pandas DataFrame.
+
+        Args:
+            sql: SQL query to execute.
+            batch_size: If set, fetch rows in batches of this size using
+                server-side cursors to reduce memory usage for large results.
+        """
         try:
             import pandas as pd
         except ImportError:
             raise ImportError("pandas is required for to_pandas(). Install with: pip install pandas")
+
+        if batch_size is not None and batch_size > 0:
+            frames: list[Any] = []
+            for batch, desc in self._conn.execute_raw_batched(sql, batch_size):
+                columns = [d[0] for d in desc] if desc else []
+                frames.append(pd.DataFrame(batch, columns=columns))
+            if not frames:
+                return pd.DataFrame()
+            return pd.concat(frames, ignore_index=True)
+
         rows, desc = self._conn.execute_raw(sql)
         columns = [d[0] for d in desc] if desc else []
         return pd.DataFrame(rows, columns=columns)

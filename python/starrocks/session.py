@@ -19,8 +19,14 @@ class Session:
         user: str = "root",
         password: str = "",
         database: str | None = None,
+        connect_timeout: int = 10,
+        read_timeout: int = 300,
     ) -> None:
-        self._conn = MySQLConnection(host=host, port=port, user=user, password=password, database=database)
+        self._conn = MySQLConnection(
+            host=host, port=port, user=user, password=password,
+            database=database, connect_timeout=connect_timeout,
+            read_timeout=read_timeout,
+        )
         self._fetcher = ResultFetcher(self._conn)
         self._database = database
 
