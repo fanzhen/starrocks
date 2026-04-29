@@ -48,7 +48,7 @@ df = session.table("vec_test")
 r2 = (df.select(
     col("id"),
     func.cosine_similarity(col("emb1"), col("emb2")).alias("sim")
-).order_by("id").to_pandas())
+).order_by(col("id")).to_pandas())
 check("TC2: DataFrame sim row count", len(r2) == 4)
 check("TC2: identical=1.0", abs(r2.iloc[0]["sim"] - 1.0) < 1e-5)
 check("TC2: orthogonal=0.0", abs(r2.iloc[1]["sim"] - 0.0) < 1e-5)
@@ -58,7 +58,7 @@ print("--- TC3: DataFrame l2_distance ---")
 r3 = (df.select(
     col("id"),
     func.l2_distance(col("emb1"), col("emb2")).alias("dist")
-).order_by("id").to_pandas())
+).order_by(col("id")).to_pandas())
 check("TC3: identical dist=0.0", abs(r3.iloc[0]["dist"] - 0.0) < 1e-5)
 check("TC3: orthogonal dist>0", r3.iloc[1]["dist"] > 0.5)
 
@@ -67,7 +67,7 @@ print("--- TC4: cosine_similarity_norm ---")
 r4 = (df.select(
     col("id"),
     func.cosine_similarity_norm(col("emb1"), col("emb2")).alias("sim_norm")
-).order_by("id").to_pandas())
+).order_by(col("id")).to_pandas())
 check("TC4: norm identical=1.0", abs(r4.iloc[0]["sim_norm"] - 1.0) < 1e-5)
 
 # TC5: aggregation with vector function
@@ -75,7 +75,7 @@ print("--- TC5: group_by + avg(cosine_similarity) ---")
 r5 = (df.select(
     col("grp"),
     func.cosine_similarity(col("emb1"), col("emb2")).alias("sim")
-).group_by("grp").agg(func.avg("sim").alias("avg_sim")).order_by("grp").to_pandas())
+).group_by("grp").agg(func.avg("sim").alias("avg_sim")).order_by(col("grp")).to_pandas())
 check("TC5: group count", len(r5) == 2)
 # group 'a': (1.0 + 0.0) / 2 = 0.5
 check("TC5: group a avg=0.5", abs(r5.iloc[0]["avg_sim"] - 0.5) < 1e-5)
