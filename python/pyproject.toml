@@ -26,6 +26,14 @@ dependencies = [
 [project.optional-dependencies]
 pandas = ["pandas>=2.0"]
 all = ["pandas>=2.0", "pyarrow>=14.0"]
+coordinator = [
+    "grpcio>=1.60",
+    "grpcio-tools>=1.60",
+    "protobuf>=4.25",
+    "getdaft>=0.3",
+    "ray>=2.9",
+    "pyarrow>=14.0",
+]
 dev = ["pytest>=7.0", "pytest-cov>=4.0", "pandas>=2.0", "pyarrow>=14.0"]
 
 [tool.setuptools.packages.find]
