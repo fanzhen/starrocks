@@ -935,6 +935,8 @@ DataFrame API 支持多模态类型标注（Image, Tensor, Embedding），与 Da
 >
 > **对应 DESIGN §9.5**: 目标架构：FE 路由 + Daft Coordinator Sidecar
 >
+> **状态**: Phase 16 ✅ 完成 → Phase 17a 待开始
+>
 > **前置依赖**: Stage 1-4 完成（SQL 引擎 + POC 客户端路由已验证混合管道可行）
 >
 > **环境要求**: 在 Stage 4 基础上增加：
@@ -966,7 +968,7 @@ DataFrame API 支持多模态类型标注（Image, Tensor, Embedding），与 Da
 
 ---
 
-### Phase 16: Daft Coordinator Sidecar + gRPC 协议
+### Phase 16: Daft Coordinator Sidecar + gRPC 协议 ✅
 
 #### 16.1 目标与验收标准
 
@@ -974,71 +976,110 @@ DataFrame API 支持多模态类型标注（Image, Tensor, Embedding），与 Da
 
 > **关键决策** (DESIGN §10 #3): gRPC + Protobuf 协议，传递逻辑计划（非物理计划），Coordinator 内部做物理计划优化。
 
-**验收用例**:
+> **状态**: ✅ 完成（2026-04-30），11 unit tests PASS + 5 skipped (daft on Python 3.14)
 
-| # | 用例 | PASS 条件 |
-|---|------|-----------|
-| 1 | Coordinator 进程启动 + 健康检查 | `grpc_health_check(coordinator:50051)` 返回 SERVING |
-| 2 | gRPC `SubmitDaftPlan` 接口 | 客户端提交逻辑计划 → Coordinator 接收解析成功 |
-| 3 | Coordinator 调度 Daft on Ray 执行 | 简单 map_batches 在 Ray Worker 上执行，结果通过 gRPC 流返回 |
-| 4 | 函数注册接口 | `RegisterFunction(name, module_path)` → Coordinator 可加载并执行 |
-| 5 | 执行错误 → gRPC 状态码 + 错误信息 | Python 异常转换为 gRPC error detail |
-| 6 | Coordinator 进程崩溃 → 外部可检测 | 健康检查返回 NOT_SERVING |
+**交付物**:
 
-#### 16.2 前置依赖
-
-- Stage 4 完成
-- Ray 集群部署就绪
-
-#### 16.3 代码任务
-
-| 步骤 | 文件 | 改动 |
-|------|------|------|
-| 16.1 | `python/starrocks/coordinator/proto/coordinator.proto` | **新建**: gRPC 协议定义（SubmitDaftPlan, RegisterFunction, GetStatus） |
-| 16.2 | `python/starrocks/coordinator/server.py` | **新建**: gRPC 服务实现 |
-| 16.3 | `python/starrocks/coordinator/daft_driver.py` | **新建**: Daft Driver 封装（LogicalPlanBuilder → optimize → FlotillaRunner → Ray） |
-| 16.4 | `python/starrocks/coordinator/function_registry.py` | **新建**: 函数注册表（name → callable 映射 + 动态 import） |
-| 16.5 | `python/starrocks/coordinator/__init__.py` | **新建**: 包初始化 |
-| 16.6 | `python/starrocks/coordinator/cli.py` | **新建**: `python -m starrocks.coordinator` 启动入口 |
-| 16.7 | `python/tests/test_coordinator.py` | **新建**: Coordinator gRPC 接口测试（本地 Ray + 真实 Daft） |
-| 16.8 | `python/tests/verify_phase16_coordinator.py` | **新建**: E2E — 启动 Coordinator → gRPC 提交 → Ray 执行 → 结果返回 |
+| 文件 | 说明 |
+|------|------|
+| `python/starrocks/coordinator/proto/coordinator.proto` | gRPC 协议: SubmitDaftPlan (server streaming), RegisterFunction, GetStatus |
+| `python/starrocks/coordinator/proto/coordinator_pb2.py` | 生成的 Protobuf 消息类 |
+| `python/starrocks/coordinator/proto/coordinator_pb2_grpc.py` | 生成的 gRPC stubs/servicer（已修复 import 路径） |
+| `python/starrocks/coordinator/function_registry.py` | 线程安全函数注册表: eager load + validation |
+| `python/starrocks/coordinator/daft_driver.py` | Daft Driver: ADBC 数据拉取 → Daft 操作 → Arrow IPC 流式返回 |
+| `python/starrocks/coordinator/server.py` | gRPC servicer: 实现 3 个 RPC，错误捕获为 gRPC error response |
+| `python/starrocks/coordinator/cli.py` | CLI: `python -m starrocks.coordinator --port 50051 --ray-address ray://...` |
+| `python/starrocks/coordinator/__init__.py` / `__main__.py` | 包初始化 + 模块入口 |
+| `python/tests/test_coordinator.py` | 16 个 mock 单元测试 (11 pass, 5 skip) |
+| `python/tests/verify_phase16_coordinator.py` | E2E 7 测试: 健康检查 → 注册 → 提交 → 错误 → 关闭 |
+| `python/pyproject.toml` | 新增 `coordinator` optional dependency group |
 
 ---
 
 ### Phase 17: FE 路由决策 + Coordinator 对接
 
-#### 17.1 目标与验收标准
+> **拆分说明**: 原计划为单一 Phase，但涉及 FE 5 个层面（语法/AST/分析器/优化器/计划器）+ gRPC 客户端 + Python 适配，改动量过大。遵循"每个 phase 必须 E2E 可测"原则，拆分为 3 个 sub-phase，每个都能独立验证。
 
-FE 解析含 `MAP_BATCHES` 标记的查询，做路由决策（SQL 段 → BE，Daft 段 → Coordinator），通过 gRPC 提交 Daft 段到 Coordinator。**这是 FE 侧首次改动**。
+#### Phase 17a: FE gRPC 客户端 + Config + 健康检查
+
+**目标**: FE 能连接 Coordinator，用户能通过 SQL 查看 Coordinator 状态。**不涉及查询路由**——只做基础设施层。
 
 **验收用例**:
 
 | # | 用例 | PASS 条件 |
 |---|------|-----------|
-| 1 | `SELECT MAP_BATCHES('func', *) FROM (SELECT * FROM t WHERE a > 1)` | FE 解析成功 |
-| 2 | 纯 SQL 查询 → FE 正常处理 | 无 MAP_BATCHES 时行为完全不变（回归） |
-| 3 | FE 路由: filter/agg → BE, MAP_BATCHES → Coordinator | EXPLAIN 可见引擎分配 |
-| 4 | `df.filter().map_batches("func").to_pandas()` 全链路 | SQL 段在 BE，Daft 段在 Coordinator/Ray，结果正确 |
-| 5 | Coordinator 不可用时 → 友好错误 | `DaftCoordinatorUnavailable` 而非 gRPC 内部错误 |
-| 6 | `SHOW PROC '/daft_coordinator'` | 显示 Coordinator 状态（ALIVE/DOWN） |
+| 1 | FE 配置 `daft_coordinator_host/port/enable` | Config.java 新增 3 个参数，FE 启动加载 |
+| 2 | FE gRPC 客户端连接 Coordinator | `DaftCoordinatorClient.getStatus()` 返回 SERVING |
+| 3 | `SHOW PROC '/daft_coordinator'` | 显示 Coordinator 状态（ALIVE/DOWN + 已注册函数数 + Ray 资源） |
+| 4 | Coordinator 不可用时 → 友好错误 | `DaftCoordinatorUnavailable` 异常，而非 gRPC 内部错误 |
+| 5 | 纯 SQL 查询 → FE 行为完全不变 | 回归测试 PASS |
 
-#### 17.2 前置依赖
+**前置依赖**: Phase 16 完成
 
-- Phase 16 完成（Coordinator gRPC 接口就绪）
-
-#### 17.3 代码任务
+**代码任务**:
 
 | 步骤 | 文件 | 改动 |
 |------|------|------|
-| 17.1 | `fe/fe-grammar/StarRocks.g4` | 扩展语法: `MAP_BATCHES(func_name, ...)` 函数表达式 |
-| 17.2 | `fe/fe-parser/.../ast/MapBatchesExpr.java` | **新建**: MapBatches AST 节点 |
-| 17.3 | `fe/fe-core/.../sql/analyzer/` | MapBatches 语义分析: 验证函数名格式、输入列存在 |
-| 17.4 | `fe/fe-core/.../sql/optimizer/` | 路由规则: 遇到 MapBatches → 标记为 Daft 段，拆分 SQL 段 |
-| 17.5 | `fe/fe-core/.../planner/` | Fragment 拆分: SQL 段 → BE Fragment，Daft 段 → gRPC 提交到 Coordinator |
-| 17.6 | `fe/fe-core/.../service/DaftCoordinatorClient.java` | **新建**: FE 侧 gRPC 客户端 |
-| 17.7 | `fe/fe-core/.../common/Config.java` | 新增: `daft_coordinator_host`, `daft_coordinator_port`, `enable_daft_coordinator` |
-| 17.8 | `python/starrocks/dataframe.py` | 目标架构模式: `map_batches("func_name")` 生成 MAP_BATCHES SQL（而非客户端路由） |
-| 17.9 | `python/tests/test_fe_routing.py` | **新建**: FE 路由决策 E2E 测试 |
+| 17a.1 | `fe/fe-core/pom.xml` | 新增 grpc-java + protobuf-java 依赖 |
+| 17a.2 | `fe/fe-core/.../proto/coordinator.proto` | 复制 Python 侧 proto（或共享），生成 Java 代码 |
+| 17a.3 | `fe/fe-core/.../common/Config.java` | 新增: `daft_coordinator_host` (default "127.0.0.1"), `daft_coordinator_port` (default 50051), `enable_daft_coordinator` (default false) |
+| 17a.4 | `fe/fe-core/.../service/DaftCoordinatorClient.java` | **新建**: FE gRPC 客户端（getStatus, submitDaftPlan, registerFunction），带连接池 + 超时 + 错误包装 |
+| 17a.5 | `fe/fe-core/.../common/proc/DaftCoordinatorProcDir.java` | **新建**: `SHOW PROC '/daft_coordinator'` 实现，调用 DaftCoordinatorClient.getStatus() |
+| 17a.6 | `python/tests/verify_phase17a.py` | **新建**: E2E — FE 启动 → `SHOW PROC '/daft_coordinator'` → 状态正确 |
+
+#### Phase 17b: MAP_BATCHES 语法 + AST + 语义分析
+
+**目标**: FE 能解析含 `MAP_BATCHES(...)` 的 SQL，做语义分析。**不涉及执行路由**——只做解析层，`EXPLAIN` 可见 MAP_BATCHES 节点。
+
+**验收用例**:
+
+| # | 用例 | PASS 条件 |
+|---|------|-----------|
+| 1 | `SELECT MAP_BATCHES('func', *) FROM t` | FE 解析成功，AST 包含 MapBatchesExpr |
+| 2 | `EXPLAIN SELECT MAP_BATCHES('func', *) FROM t` | EXPLAIN 输出可见 MAP_BATCHES 节点 |
+| 3 | `MAP_BATCHES` 带错误参数 → 分析阶段报错 | `AnalysisException` 明确提示参数格式 |
+| 4 | 纯 SQL 查询（无 MAP_BATCHES）→ 行为不变 | 回归测试 PASS |
+| 5 | `MAP_BATCHES` 嵌套在子查询中 | 解析正确 |
+
+**前置依赖**: Phase 17a 完成
+
+**代码任务**:
+
+| 步骤 | 文件 | 改动 |
+|------|------|------|
+| 17b.1 | `fe/fe-grammar/StarRocks.g4` | 扩展语法: `MAP_BATCHES(string_literal, column_list)` 函数表达式 |
+| 17b.2 | `fe/fe-parser/.../ast/MapBatchesExpr.java` | **新建**: MapBatches AST 节点（functionName: String, columns: List<Expr>） |
+| 17b.3 | `fe/fe-parser/.../AstBuilder.java` | visitMapBatches → 构建 MapBatchesExpr |
+| 17b.4 | `fe/fe-core/.../sql/analyzer/` | MapBatches 语义分析: 验证函数名非空、输入列存在、enable_daft_coordinator=true |
+| 17b.5 | `python/tests/verify_phase17b.py` | **新建**: E2E — `EXPLAIN SELECT MAP_BATCHES(...)` → 验证解析成功 |
+
+#### Phase 17c: 执行路由 + Coordinator 对接 + Python 适配
+
+**目标**: 含 MAP_BATCHES 的查询全链路执行——FE 拆分 SQL 段 + Daft 段，SQL 段发 BE，Daft 段 gRPC 提交 Coordinator，结果合并返回客户端。
+
+**验收用例**:
+
+| # | 用例 | PASS 条件 |
+|---|------|-----------|
+| 1 | `SELECT MAP_BATCHES('func', *) FROM (SELECT * FROM t WHERE a > 1)` 全链路 | SQL 段在 BE 执行，Daft 段在 Coordinator/Ray 执行，结果正确 |
+| 2 | `df.filter().map_batches("func").to_pandas()` 全链路 | Python SDK 生成 MAP_BATCHES SQL → FE 路由 → 结果正确 |
+| 3 | FE 路由: filter/agg → BE, MAP_BATCHES → Coordinator | EXPLAIN 可见引擎分配 |
+| 4 | Coordinator 不可用时执行含 MAP_BATCHES 的查询 | 友好错误 `DaftCoordinatorUnavailable` |
+| 5 | 多段 pipeline: `filter → MAP_BATCHES → filter → MAP_BATCHES` | 两个 Daft 段分别执行，结果正确 |
+
+**前置依赖**: Phase 17b 完成
+
+**代码任务**:
+
+| 步骤 | 文件 | 改动 |
+|------|------|------|
+| 17c.1 | `fe/fe-core/.../sql/optimizer/` | 路由规则: 遇到 MapBatchesExpr → 标记为 Daft 段，向下收集 SQL 段 |
+| 17c.2 | `fe/fe-core/.../planner/` | Fragment 拆分: SQL 段 → BE Fragment 执行，Daft 段 → gRPC 提交 Coordinator，结果回收 |
+| 17c.3 | `fe/fe-core/.../qe/StmtExecutor.java` | 混合执行: 检测 MAP_BATCHES → 调用 DaftCoordinatorClient.submitDaftPlan() |
+| 17c.4 | `python/starrocks/dataframe.py` | 目标架构模式: `map_batches("func_name")` 生成 `MAP_BATCHES('func_name', ...)` SQL（而非客户端路由） |
+| 17c.5 | `python/tests/verify_phase17c.py` | **新建**: FE 路由决策全链路 E2E 测试 |
+
+> **关键风险**: 17c.2 Fragment 拆分是最复杂的步骤。StarRocks 现有 planner 假设所有 Fragment 都发往 BE。引入 Coordinator 目标需要在 Fragment 层面增加"外部执行"的概念。如果此步骤过于侵入，可降级为 StmtExecutor 层面的两阶段执行（先执行 SQL 段，再提交 Daft 段），避免改动 Fragment 核心逻辑。
 
 ---
 
@@ -1063,7 +1104,7 @@ FE 解析含 `MAP_BATCHES` 标记的查询，做路由决策（SQL 段 → BE，
 
 #### 18.2 前置依赖
 
-- Phase 17 完成
+- Phase 17c 完成（FE 全链路路由就绪）
 
 #### 18.3 代码任务
 
@@ -1156,8 +1197,11 @@ FE 解析含 `MAP_BATCHES` 标记的查询，做路由决策（SQL 段 → BE，
 Stage 5 是从"POC 客户端路由"(DESIGN §9.4) 到"目标架构"(DESIGN §9.5) 的核心演进，分 5 个 phase 渐进实施：
 
 ```
-Phase 16: Coordinator Sidecar    → 独立进程 + gRPC 协议（FE 侧不改，先验证 Coordinator 本身）
-Phase 17: FE 路由 + 对接         → FE 解析 MAP_BATCHES → gRPC 提交到 Coordinator（首次 FE 改动）
+Phase 16: Coordinator Sidecar    → 独立进程 + gRPC 协议（FE 侧不改，先验证 Coordinator 本身）  ✅
+Phase 17: FE 路由 + 对接         → 拆分为 3 个 sub-phase（首次 FE 改动）
+  17a: FE gRPC 客户端 + Config + 健康检查   → FE 连接 Coordinator + SHOW PROC
+  17b: MAP_BATCHES 语法 + AST + 语义分析    → FE 解析 MAP_BATCHES SQL，EXPLAIN 可见
+  17c: 执行路由 + Coordinator 对接 + Python → 全链路: SQL 段 → BE, Daft 段 → Coordinator
 Phase 18: 函数注册               → CREATE/DROP/SHOW DAFT FUNCTION DDL + 持久化
 Phase 19: BE ↔ Ray 双向直连      → 消除客户端中转，数据直达
 Phase 20: 全局优化 + 生产化       → 跨引擎优化、生命周期管理、Trace ID
@@ -1165,6 +1209,6 @@ Phase 20: 全局优化 + 生产化       → 跨引擎优化、生命周期管�
 
 关键设计选择：
 - **Phase 16 先做 Coordinator，不改 FE**：降低风险，独立验证 Daft Driver + gRPC 接口的可行性
-- **Phase 17 再接入 FE**：FE 改动量大（语法/AST/分析器/优化器/计划器），但有 Phase 16 的 Coordinator 可用作后端
+- **Phase 17 拆为 3 个 sub-phase**：FE 改动涉及语法/AST/分析器/优化器/计划器 5 个层面 + gRPC Java 依赖引入，单一 Phase 无法保证 E2E 可测。拆分后每个 sub-phase 独立可验证：17a 只验连接+状态，17b 只验解析，17c 验全链路执行
 - **Phase 18 函数注册在 FE 路由之后**：先跑通"硬编码函数名"的全链路，再加注册机制
 - **Phase 19 双向直连**：DESIGN §9.5.1 的核心数据流优化，BE→Worker 和 Worker→BE 都不经客户端
