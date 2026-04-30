@@ -237,7 +237,7 @@ export SR_DATABASE=test_dataframe
 
 > **目标**: 纯 Python 客户端，通过 SQL 生成 + MySQL 协议实现完整的 DataFrame API，零 StarRocks 服务端改动。
 >
-> **对应 DESIGN 9.4 阶段 1**: DataFrame → SQL → StarRocks
+> **对应 DESIGN §5**: SQL 引擎架构
 >
 > **状态**: ✅ 完成（Phase 1-7，136 unit tests，12/12 E2E PASS）
 
@@ -644,11 +644,11 @@ Stage 1 的收尾工作。StarRocks 已内置 `cosine_similarity`、`l2_distance
 
 ## Stage 2: Daft on Ray POC ✅
 
-> **目标**: 验证 §9.3 推荐架构 (StarRocks + Daft on Ray) 的核心管道：StarRocks 查数据 → Daft 做 Python 处理 → 结果写回 StarRocks。
+> **目标**: 验证 DESIGN §9.3 双引擎选型（StarRocks + Daft on Ray）的核心管道：StarRocks 查数据 → Daft 做 Python 处理 → 结果写回 StarRocks。
 >
-> 跳过 Arrow Flight，用 MySQL → pandas → Daft 桥梁（POC 阶段足够）。阶段 3 引入 Arrow Flight 后替换。
+> 跳过 Arrow Flight，用 MySQL → pandas → Daft 桥梁（POC 阶段足够）。Stage 3 引入 Arrow Flight 后替换。
 >
-> **对应 DESIGN §9.4 阶段 2**: Daft on Ray POC
+> **对应 DESIGN §9.4**: POC 架构（客户端路由）
 >
 > **状态**: ✅ 完成（Phase 8-9，to_daft / map_batches / write_daft，8/8 E2E PASS）
 >
@@ -707,7 +707,7 @@ Stage 1 的收尾工作。StarRocks 已内置 `cosine_similarity`、`l2_distance
 
 > **目标**: 用 Arrow Flight SQL 替代 Stage 2 的 MySQL → pandas 桥梁，实现 StarRocks ↔ Daft 零拷贝列式数据交换。
 >
-> **对应 DESIGN §9.4 阶段 3**: + Arrow Flight 数据通道
+> **对应 DESIGN §9.4**: POC 架构 + Arrow Flight 零拷贝通道
 >
 > **状态**: ✅ 完成（Phase 10-11，Arrow Flight SQL 客户端 + 双通道切换，19/19 E2E PASS）
 >
@@ -790,7 +790,7 @@ Session 支持 MySQL 和 Arrow Flight 双通道，用户可通过参数选择或
 
 > **目标**: 实现 §9.3 架构的完整形态——DataFrame API 层根据操作类型自动路由（SQL 操作 → StarRocks，多模态操作 → Daft on Ray），Arrow Flight 做数据桥梁，多模态类型系统。
 >
-> **对应 DESIGN §9.4 阶段 4**: + 完整 Daft 集成 + 自动路由
+> **对应 DESIGN §9.4**: POC 架构完整形态（客户端路由 + 自动分段 + 多模态类型）
 >
 > **状态**: ✅ 完成（Phase 12-14，Ray 集群集成 + 混合 Pipeline 自动路由 + 多模态类型系统，31 unit tests + 9 E2E PASS）
 >
@@ -929,169 +929,191 @@ DataFrame API 支持多模态类型标注（Image, Tensor, Embedding），与 Da
 
 ---
 
-## Stage 5: 服务端路由 + Daft Coordinator Sidecar
+## Stage 5: 目标架构 — FE 路由 + Daft Coordinator Sidecar
 
-> **目标**: 将路由决策和执行协调上移到 StarRocks FE 侧，Daft Coordinator 作为 FE sidecar 管理 Ray 上的执行。用户只需一个连接，提交"带 UDF 引用的查询计划"，FE 利用 CBO + 统计信息做全局最优路由。
+> **目标**: 从 POC 的"客户端路由"演进到 DESIGN §9.5 的目标架构——路由决策和执行协调上移到 StarRocks FE 侧，Daft Coordinator 作为 FE sidecar 管理 Ray 上的执行。用户只需 `Session("sr:9030")`，不需要安装 Ray/Daft，不需要 `ray.init()`。
 >
-> **对应 DESIGN §9.3**: 阶段 5 架构：服务端路由 + Daft Coordinator
+> **对应 DESIGN §9.5**: 目标架构：FE 路由 + Daft Coordinator Sidecar
 >
-> **前置依赖**: Stage 4 完成（纯 Python 路由已验证混合管道可行）
+> **前置依赖**: Stage 1-4 完成（SQL 引擎 + POC 客户端路由已验证混合管道可行）
 >
 > **环境要求**: 在 Stage 4 基础上增加：
 > - FE 侧部署 Python 3.10+ 环境 + Daft + Ray 客户端
 > - gRPC 端口（FE ↔ Coordinator 通信）
-> - BE Arrow Flight 端口（BE → Ray Worker 直连数据通道）
+> - BE Arrow Flight 端口（BE ↔ Ray Worker 双向直连数据通道）
 >
-> **架构参考**: DESIGN §9.3.1 目标架构图
+> **架构参考**: DESIGN §9.5.1
 >
 > ```
-> Python Client (轻量) → FE (路由决策, CBO) → BE (SQL 执行)
->                                            → Daft Coordinator (UDF 调度) → Ray Workers
->                                  BE ──Arrow Flight──→ Ray Workers (直连，不经客户端)
+> Python Client (轻量，只需 pymysql)
+>     │ 提交: 逻辑计划 (含 Daft 段引用)
+>     ▼
+> StarRocks FE (路由决策, CBO)
+>     ├── SQL 段 → BE (C++ 执行)
+>     └── Daft 段 → Coordinator (Python, Daft Driver)
+>                       └── Ray Workers (Daft Executor)
+>         BE ←─Arrow Flight─→ Ray Workers (双向直连，不经客户端)
 > ```
+>
+> **与 Stage 4 的核心差异** (DESIGN §9.5.2):
+>
+> | 维度 | Stage 4 (POC) | Stage 5 (目标) |
+> |------|--------------|---------------|
+> | 路由决策 | 客户端规则匹配 | FE CBO + 统计信息 |
+> | 数据流 | BE → 客户端 → Daft | BE ↔ Ray Worker 双向直连 |
+> | 用户依赖 | 需安装 Ray/Daft/pyarrow | 只需 pymysql |
+> | 统一治理 | FE 不感知 Daft | FE 统一 session/认证/审计/资源 |
 
 ---
 
-### Phase 16: FE 路由决策 + 执行计划下发
+### Phase 16: Daft Coordinator Sidecar + gRPC 协议
 
 #### 16.1 目标与验收标准
 
-FE 接收带 UDF 标记的逻辑计划，利用优化器做路由决策（SQL 段 → BE，UDF 段 → Coordinator），但 Daft 执行仍由客户端驱动（渐进路径 Step 1，参见 DESIGN §9.3）。
+部署 Daft Coordinator 作为独立 Python 进程，实现 gRPC 接口。FE 通过 gRPC 提交 Daft 段执行计划，Coordinator 承担 Daft Driver 角色，调度 Ray Worker 执行。**此阶段 FE 侧先不改**——用一个独立 Python 脚本模拟 FE 的 gRPC 调用，验证 Coordinator 本身可工作。
+
+> **关键决策** (DESIGN §10 #3): gRPC + Protobuf 协议，传递逻辑计划（非物理计划），Coordinator 内部做物理计划优化。
 
 **验收用例**:
 
 | # | 用例 | PASS 条件 |
 |---|------|-----------|
-| 1 | FE 接收含 `MapBatches` 标记的查询计划 | FE 解析成功，识别 SQL 段和 UDF 段 |
-| 2 | 纯 SQL 查询 → FE 正常处理 | 无 UDF 标记时行为与现有完全一致（回归） |
-| 3 | FE 路由: filter/agg → BE, map_batches → 客户端 | 路由决策正确，explain 可见 |
-| 4 | 跨段谓词下推 | `filter → map_batches → filter` 中首段 filter 下推到 SQL 段 |
-| 5 | `df.explain()` 显示引擎分配 | 每段标注 `[StarRocks]` 或 `[Daft]` |
-| 6 | 基于统计信息的路由增强 | 小表 UDF 可选择不传输到 Ray（本地执行） |
+| 1 | Coordinator 进程启动 + 健康检查 | `grpc_health_check(coordinator:50051)` 返回 SERVING |
+| 2 | gRPC `SubmitDaftPlan` 接口 | 客户端提交逻辑计划 → Coordinator 接收解析成功 |
+| 3 | Coordinator 调度 Daft on Ray 执行 | 简单 map_batches 在 Ray Worker 上执行，结果通过 gRPC 流返回 |
+| 4 | 函数注册接口 | `RegisterFunction(name, module_path)` → Coordinator 可加载并执行 |
+| 5 | 执行错误 → gRPC 状态码 + 错误信息 | Python 异常转换为 gRPC error detail |
+| 6 | Coordinator 进程崩溃 → 外部可检测 | 健康检查返回 NOT_SERVING |
 
 #### 16.2 前置依赖
 
 - Stage 4 完成
-- 对 FE SQL 计划器和优化器有基本了解（`StatementPlanner.java`, `Optimizer.java`）
+- Ray 集群部署就绪
 
 #### 16.3 代码任务
 
 | 步骤 | 文件 | 改动 |
 |------|------|------|
-| 16.1 | `fe/fe-parser/.../ast/MapBatchesExpr.java` | **新建**: MapBatches AST 节点（UDF 名称 + 参数引用） |
-| 16.2 | `fe/fe-grammar/StarRocks.g4` | 扩展语法: `MAP_BATCHES(udf_name, col1, col2, ...)` 或注解语法 |
-| 16.3 | `fe/fe-core/.../sql/analyzer/` | MapBatches 语义分析: 验证 UDF 名称已注册、输入列存在 |
-| 16.4 | `fe/fe-core/.../sql/optimizer/` | 路由规则: 遇到 MapBatches 节点 → 标记为 Daft 段，上下游拆分为 SQL 段 |
-| 16.5 | `fe/fe-core/.../planner/` | Fragment 拆分: SQL 段正常生成 Fragment → BE，UDF 段生成 ExternalExecNode → 客户端/Coordinator |
-| 16.6 | `python/starrocks/dataframe.py` | 客户端对接: 接收 FE 的路由决策结果，按指示执行 |
-| 16.7 | `python/tests/test_fe_routing.py` | **新建**: FE 路由决策测试 |
+| 16.1 | `python/starrocks/coordinator/proto/coordinator.proto` | **新建**: gRPC 协议定义（SubmitDaftPlan, RegisterFunction, GetStatus） |
+| 16.2 | `python/starrocks/coordinator/server.py` | **新建**: gRPC 服务实现 |
+| 16.3 | `python/starrocks/coordinator/daft_driver.py` | **新建**: Daft Driver 封装（LogicalPlanBuilder → optimize → FlotillaRunner → Ray） |
+| 16.4 | `python/starrocks/coordinator/function_registry.py` | **新建**: 函数注册表（name → callable 映射 + 动态 import） |
+| 16.5 | `python/starrocks/coordinator/__init__.py` | **新建**: 包初始化 |
+| 16.6 | `python/starrocks/coordinator/cli.py` | **新建**: `python -m starrocks.coordinator` 启动入口 |
+| 16.7 | `python/tests/test_coordinator.py` | **新建**: Coordinator gRPC 接口测试（本地 Ray + 真实 Daft） |
+| 16.8 | `python/tests/verify_phase16_coordinator.py` | **新建**: E2E — 启动 Coordinator → gRPC 提交 → Ray 执行 → 结果返回 |
 
 ---
 
-### Phase 17: UDF 注册 + 管理
+### Phase 17: FE 路由决策 + Coordinator 对接
 
 #### 17.1 目标与验收标准
 
-实现 Python UDF 注册机制，用户预注册 UDF 后通过名称引用（类似 Flink UDF 注册），FE 在计划时按名称解析。
+FE 解析含 `MAP_BATCHES` 标记的查询，做路由决策（SQL 段 → BE，Daft 段 → Coordinator），通过 gRPC 提交 Daft 段到 Coordinator。**这是 FE 侧首次改动**。
 
 **验收用例**:
 
 | # | 用例 | PASS 条件 |
 |---|------|-----------|
-| 1 | `CREATE PYTHON FUNCTION udf_name AS 'module.func'` | FE 元数据持久化 UDF 定义 |
-| 2 | `SHOW PYTHON FUNCTIONS` | 列出已注册 UDF |
-| 3 | `DROP PYTHON FUNCTION udf_name` | 删除 UDF 注册 |
-| 4 | `df.map_batches("udf_name")` 按名称引用 | FE 解析成功，路由到 Daft |
-| 5 | 引用不存在的 UDF → 友好错误 | `AnalysisException: Python UDF 'xxx' not found` |
-| 6 | UDF 元数据跨 FE 重启持久化 | 重启后 `SHOW PYTHON FUNCTIONS` 仍显示 |
+| 1 | `SELECT MAP_BATCHES('func', *) FROM (SELECT * FROM t WHERE a > 1)` | FE 解析成功 |
+| 2 | 纯 SQL 查询 → FE 正常处理 | 无 MAP_BATCHES 时行为完全不变（回归） |
+| 3 | FE 路由: filter/agg → BE, MAP_BATCHES → Coordinator | EXPLAIN 可见引擎分配 |
+| 4 | `df.filter().map_batches("func").to_pandas()` 全链路 | SQL 段在 BE，Daft 段在 Coordinator/Ray，结果正确 |
+| 5 | Coordinator 不可用时 → 友好错误 | `DaftCoordinatorUnavailable` 而非 gRPC 内部错误 |
+| 6 | `SHOW PROC '/daft_coordinator'` | 显示 Coordinator 状态（ALIVE/DOWN） |
 
 #### 17.2 前置依赖
 
-- Phase 16 完成
+- Phase 16 完成（Coordinator gRPC 接口就绪）
 
 #### 17.3 代码任务
 
 | 步骤 | 文件 | 改动 |
 |------|------|------|
-| 17.1 | `fe/fe-grammar/StarRocks.g4` | 新增语法: `CREATE/DROP/SHOW PYTHON FUNCTION` |
-| 17.2 | `fe/fe-parser/.../ast/` | `CreatePythonFunctionStmt`, `DropPythonFunctionStmt`, `ShowPythonFunctionsStmt` |
-| 17.3 | `fe/fe-core/.../catalog/PythonUDFManager.java` | **新建**: UDF 元数据管理（内存 + 持久化） |
-| 17.4 | `fe/fe-core/.../sql/analyzer/` | UDF DDL 语义分析 |
-| 17.5 | `fe/fe-core/.../qe/StmtExecutor.java` | 执行 UDF DDL |
-| 17.6 | `python/starrocks/session.py` | `session.register_udf(name, func)` — 通过 DDL 注册 |
-| 17.7 | `python/tests/test_udf_registry.py` | **新建**: UDF 注册 E2E 测试 |
+| 17.1 | `fe/fe-grammar/StarRocks.g4` | 扩展语法: `MAP_BATCHES(func_name, ...)` 函数表达式 |
+| 17.2 | `fe/fe-parser/.../ast/MapBatchesExpr.java` | **新建**: MapBatches AST 节点 |
+| 17.3 | `fe/fe-core/.../sql/analyzer/` | MapBatches 语义分析: 验证函数名格式、输入列存在 |
+| 17.4 | `fe/fe-core/.../sql/optimizer/` | 路由规则: 遇到 MapBatches → 标记为 Daft 段，拆分 SQL 段 |
+| 17.5 | `fe/fe-core/.../planner/` | Fragment 拆分: SQL 段 → BE Fragment，Daft 段 → gRPC 提交到 Coordinator |
+| 17.6 | `fe/fe-core/.../service/DaftCoordinatorClient.java` | **新建**: FE 侧 gRPC 客户端 |
+| 17.7 | `fe/fe-core/.../common/Config.java` | 新增: `daft_coordinator_host`, `daft_coordinator_port`, `enable_daft_coordinator` |
+| 17.8 | `python/starrocks/dataframe.py` | 目标架构模式: `map_batches("func_name")` 生成 MAP_BATCHES SQL（而非客户端路由） |
+| 17.9 | `python/tests/test_fe_routing.py` | **新建**: FE 路由决策 E2E 测试 |
 
 ---
 
-### Phase 18: Daft Coordinator Sidecar
+### Phase 18: 函数注册 + 管理
 
 #### 18.1 目标与验收标准
 
-部署 Daft Coordinator 作为 FE sidecar 进程。FE 通过 gRPC 提交 UDF 段执行计划，Coordinator 承担 Daft Driver 角色，调度 Ray Worker 执行。
+函数注册机制：用户通过 DDL 注册 Python 函数（模块路径 + 函数名），FE 持久化元数据，Coordinator 动态加载执行。
+
+> **关键决策** (DESIGN §10 #4): 混合模式——POC 支持 inline closure，目标架构采用注册 + 名称引用。此 phase 实现注册模式。
 
 **验收用例**:
 
 | # | 用例 | PASS 条件 |
 |---|------|-----------|
-| 1 | FE 启动时自动启动 Coordinator sidecar | Coordinator 进程运行中 |
-| 2 | FE 健康检查 Coordinator 状态 | `SHOW PROC '/daft_coordinator'` 显示 ALIVE |
-| 3 | FE 提交 UDF 段 → Coordinator 调度 Ray 执行 | UDF 在 Ray Worker 上执行成功 |
-| 4 | Coordinator 崩溃 → 自动重启 | 30 秒内恢复 |
-| 5 | `df.filter().map_batches("udf").to_pandas()` 全链路 | SQL 段在 BE，UDF 段在 Ray，结果正确 |
-| 6 | 性能: 与 Stage 4 客户端路由对比 | 延迟可接受（不超过 20% 开销） |
+| 1 | `CREATE DAFT FUNCTION func_name AS 'module.func'` | FE 元数据持久化 + Coordinator 加载成功 |
+| 2 | `SHOW DAFT FUNCTIONS` | 列出已注册函数（名称、模块路径、创建时间） |
+| 3 | `DROP DAFT FUNCTION func_name` | 删除注册 + Coordinator 卸载 |
+| 4 | `df.map_batches("func_name")` → 全链路执行 | FE 解析 → Coordinator 按名称找到函数 → Ray 执行 → 结果正确 |
+| 5 | 引用不存在的函数 → 友好错误 | `AnalysisException: Daft function 'xxx' not found` |
+| 6 | 函数元数据跨 FE 重启持久化 | 重启后 `SHOW DAFT FUNCTIONS` 仍显示 |
 
 #### 18.2 前置依赖
 
-- Phase 17 完成（UDF 注册机制就绪）
-- Ray 集群部署就绪
+- Phase 17 完成
 
 #### 18.3 代码任务
 
 | 步骤 | 文件 | 改动 |
 |------|------|------|
-| 18.1 | `python/starrocks/coordinator/__init__.py` | **新建**: Coordinator 包 |
-| 18.2 | `python/starrocks/coordinator/server.py` | **新建**: gRPC 服务（接收 UDF 段计划 → Daft Driver 执行） |
-| 18.3 | `python/starrocks/coordinator/udf_registry.py` | **新建**: UDF 注册表（从 FE 同步 + 本地缓存） |
-| 18.4 | `python/starrocks/coordinator/daft_driver.py` | **新建**: Daft Driver 封装（FlotillaRunner + Ray 调度） |
-| 18.5 | `gensrc/proto/daft_coordinator.proto` | **新建**: FE ↔ Coordinator gRPC 协议 |
-| 18.6 | `fe/fe-core/.../service/DaftCoordinatorClient.java` | **新建**: FE 侧 gRPC 客户端 |
-| 18.7 | `fe/fe-core/.../common/Config.java` | 新增配置: `daft_coordinator_host`, `daft_coordinator_port`, `enable_daft_coordinator` |
-| 18.8 | `fe/bin/start_daft_coordinator.sh` | **新建**: Coordinator 启动脚本 |
-| 18.9 | `python/tests/test_coordinator.py` | **新建**: Coordinator 集成测试 |
+| 18.1 | `fe/fe-grammar/StarRocks.g4` | 新增: `CREATE/DROP/SHOW DAFT FUNCTION` 语法 |
+| 18.2 | `fe/fe-parser/.../ast/` | `CreateDaftFunctionStmt`, `DropDaftFunctionStmt`, `ShowDaftFunctionsStmt` |
+| 18.3 | `fe/fe-core/.../catalog/DaftFunctionManager.java` | **新建**: 函数元数据管理（内存 + EditLog 持久化） |
+| 18.4 | `fe/fe-core/.../sql/analyzer/` | DDL 语义分析 |
+| 18.5 | `fe/fe-core/.../qe/StmtExecutor.java` | 执行 DDL |
+| 18.6 | `python/starrocks/session.py` | `session.register_function(name, module_path)` — 通过 DDL 注册 |
+| 18.7 | `python/tests/test_function_registry.py` | **新建**: 函数注册 E2E 测试 |
 
 ---
 
-### Phase 19: BE → Ray Worker 直连数据通道
+### Phase 19: BE ↔ Ray Worker 双向直连
 
 #### 19.1 目标与验收标准
 
-消除客户端数据中转。SQL 段执行结果由 BE 通过 Arrow Flight 直接推送给 Ray Worker，不经过客户端或 FE。
+消除客户端数据中转。SQL 段执行结果由 BE 通过 Arrow Flight 直接推送给 Ray Worker；Daft 段处理结果由 Ray Worker 通过 Arrow Flight 或 Stream Load 写回 StarRocks。
+
+> **对应 DESIGN §9.5.1 数据流方向**:
+> - ① BE → Worker：SQL 结果送入 Daft（如 `filter(SQL) → map_batches(func)` 的衔接点）
+> - ② Worker → BE：Daft 结果写回 StarRocks（如 `.to_starrocks("enriched_table")`）
 
 **验收用例**:
 
 | # | 用例 | PASS 条件 |
 |---|------|-----------|
 | 1 | BE 结果通过 Arrow Flight 推送到 Ray Worker | Ray Worker 接收到 Arrow RecordBatch |
-| 2 | FE 部署 Fragment 时包含 Ray Worker 端点 | BE 知道结果推送目标 |
-| 3 | `df.filter().map_batches("udf").to_pandas()` 全链路 | 数据 BE → Ray → 客户端，不经 FE 中转 |
-| 4 | 大数据量 (10M 行) pipeline | 性能优于 Stage 4 客户端中转模式 |
-| 5 | 多 BE → 多 Ray Worker 并行推送 | 数据分片正确、结果完整 |
-| 6 | BE 或 Ray Worker 故障 → 友好错误信息 | 包含具体节点和端口信息 |
+| 2 | Ray Worker 处理结果通过 Stream Load 写回 StarRocks | 数据正确入库 |
+| 3 | FE 部署 Fragment 时包含 Ray Worker Flight 端点 | BE 知道结果推送目标 |
+| 4 | `df.filter().map_batches("func").to_pandas()` 全链路 | 数据 BE → Ray → 客户端，不经 FE/客户端中转 |
+| 5 | `df.filter().map_batches("func").to_starrocks("target")` | 数据 BE → Ray → BE，闭环不经客户端 |
+| 6 | 大数据量 (10M 行) pipeline | 性能优于 Stage 4 客户端中转模式 |
 
 #### 19.2 前置依赖
 
-- Phase 18 完成（Coordinator 就绪，可协调 Ray Worker）
-- Daft 的 Flight shuffle 能力可复用（Ray Worker 上启动 Arrow Flight 接收端）
+- Phase 18 完成（函数注册 + Coordinator 全链路就绪）
 
 #### 19.3 代码任务
 
 | 步骤 | 文件 | 改动 |
 |------|------|------|
 | 19.1 | `python/starrocks/coordinator/flight_receiver.py` | **新建**: Ray Worker 上的 Arrow Flight 接收端 |
-| 19.2 | `fe/fe-core/.../planner/` | Fragment 部署时注入 Ray Worker Flight 端点作为 result sink |
-| 19.3 | `be/src/exec/` | Arrow Flight ResultSink: 将结果推送到外部 Flight 端点（而非 ResultBufferMgr） |
-| 19.4 | `python/starrocks/coordinator/daft_driver.py` | 更新: 从 Flight 接收端获取数据（替代从客户端中转） |
-| 19.5 | `python/tests/test_direct_channel.py` | **新建**: BE → Ray 直连测试 |
+| 19.2 | `python/starrocks/coordinator/flight_writer.py` | **新建**: Ray Worker → StarRocks Stream Load 写回 |
+| 19.3 | `fe/fe-core/.../planner/` | Fragment 部署时注入 Ray Worker Flight 端点作为 result sink |
+| 19.4 | `be/src/exec/` | Arrow Flight ResultSink: 将结果推送到外部 Flight 端点 |
+| 19.5 | `python/starrocks/coordinator/daft_driver.py` | 更新: 从 Flight 接收端获取数据（替代客户端中转） |
+| 19.6 | `python/tests/test_direct_channel.py` | **新建**: BE ↔ Ray 直连测试 |
 
 ---
 
@@ -1105,13 +1127,12 @@ FE 接收带 UDF 标记的逻辑计划，利用优化器做路由决策（SQL �
 
 | # | 用例 | PASS 条件 |
 |---|------|-----------|
-| 1 | 跨段谓词下推到 SQL | Daft 段后的 filter 条件自动下推 |
+| 1 | 跨段谓词下推到 SQL | Daft 段后的 filter 条件自动下推到 SQL 段 |
 | 2 | 跨段列裁剪 | 只传输下游需要的列，减少数据传输 |
-| 3 | 连续 map_batches 合并 | 多个 UDF 段合并为一次数据传输 |
-| 4 | 基于统计信息的路由决策 | 小表 UDF 就地执行，不传输到 Ray |
-| 5 | Trace ID 跨 FE/BE/Ray 穿透 | 完整的调用链路追踪 |
-| 6 | 多租户资源隔离 | 不同用户的 UDF 执行互不干扰 |
-| 7 | 混合 pipeline 10M 行 E2E | 端到端正确 + 性能对比直接 SQL ≤ 2x |
+| 3 | 连续 map_batches 合并 | 多个 Daft 段合并为一次数据传输 |
+| 4 | Coordinator 随 FE 启停 + 健康检查 + 自动重启 | 30 秒内恢复 |
+| 5 | Trace ID 跨 FE/BE/Coordinator/Ray 穿透 | 完整的调用链路追踪 |
+| 6 | 混合 pipeline 10M 行 E2E | 端到端正确 + 性能对比直接 SQL ≤ 2x |
 
 #### 20.2 前置依赖
 
@@ -1123,23 +1144,27 @@ FE 接收带 UDF 标记的逻辑计划，利用优化器做路由决策（SQL �
 |------|------|------|
 | 20.1 | `fe/fe-core/.../sql/optimizer/` | 跨引擎优化规则: predicate pushdown, projection pruning, segment merging |
 | 20.2 | `fe/fe-core/.../qe/` | 执行统计收集: 数据量、传输时间、引擎耗时 |
-| 20.3 | `python/starrocks/coordinator/server.py` | Trace ID 穿透 + 资源隔离 |
-| 20.4 | `fe/fe-core/.../common/Config.java` | 生产配置: 超时、重试、资源限制 |
-| 20.5 | `docs/en/developers/dataframe-api.md` | **新建**: 用户文档 |
+| 20.3 | `fe/bin/start_daft_coordinator.sh` | **新建**: Coordinator 生命周期管理（随 FE 启停） |
+| 20.4 | `python/starrocks/coordinator/server.py` | Trace ID 穿透 + 优雅关闭 |
+| 20.5 | `fe/fe-core/.../common/Config.java` | 生产配置: 超时、重试、资源限制 |
 | 20.6 | `python/tests/test_optimizer.py` | **新建**: 优化规则正确性 + 性能基准 |
 
 ---
 
 ### Stage 5 总结
 
-Stage 5 是从"Python 客户端路由"到"服务端路由 + 执行"的核心演进，分 5 个 phase 渐进实施：
+Stage 5 是从"POC 客户端路由"(DESIGN §9.4) 到"目标架构"(DESIGN §9.5) 的核心演进，分 5 个 phase 渐进实施：
 
 ```
-Phase 16: FE 路由决策          → FE 能看懂 UDF 段，做路由决策（客户端仍执行）
-Phase 17: UDF 注册             → UDF 从 inline closure 变为注册 + 引用
-Phase 18: Coordinator Sidecar  → FE → Coordinator → Ray，服务端执行
-Phase 19: BE → Ray 直连        → 消除客户端中转，数据直达
-Phase 20: 全局优化 + 生产化     → 跨引擎优化、统计信息、资源隔离
+Phase 16: Coordinator Sidecar    → 独立进程 + gRPC 协议（FE 侧不改，先验证 Coordinator 本身）
+Phase 17: FE 路由 + 对接         → FE 解析 MAP_BATCHES → gRPC 提交到 Coordinator（首次 FE 改动）
+Phase 18: 函数注册               → CREATE/DROP/SHOW DAFT FUNCTION DDL + 持久化
+Phase 19: BE ↔ Ray 双向直连      → 消除客户端中转，数据直达
+Phase 20: 全局优化 + 生产化       → 跨引擎优化、生命周期管理、Trace ID
 ```
 
-每个 phase 独立可测，前一个 phase 完成后系统仍是可工作状态。Phase 16-17 不需要 Coordinator，可以在现有客户端路由基础上增量开发。Phase 18 开始引入 Coordinator sidecar。Phase 19 实现数据直达。Phase 20 做全局优化和生产化。
+关键设计选择：
+- **Phase 16 先做 Coordinator，不改 FE**：降低风险，独立验证 Daft Driver + gRPC 接口的可行性
+- **Phase 17 再接入 FE**：FE 改动量大（语法/AST/分析器/优化器/计划器），但有 Phase 16 的 Coordinator 可用作后端
+- **Phase 18 函数注册在 FE 路由之后**：先跑通"硬编码函数名"的全链路，再加注册机制
+- **Phase 19 双向直连**：DESIGN §9.5.1 的核心数据流优化，BE→Worker 和 Worker→BE 都不经客户端
