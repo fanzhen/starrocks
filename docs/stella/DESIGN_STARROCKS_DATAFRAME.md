@@ -158,6 +158,64 @@ hive_df.join(session.table("users"), on="user_id")
 - **计算下推**: 所有操作转换为 SQL 在 StarRocks 集群执行，客户端只接收结果
 - **StarRocks 原生**: 可以暴露 StarRocks 的全部 SQL 能力，包括专有特性
 
+### 3.3 为什么不直接用 Daft
+
+Daft 是优秀的多模态 DataFrame 引擎，我们也选择它作为多模态执行层（§9.3）。但直接用 Daft 替代 StarRocks DataFrame 不可行，因为企业数据管道的核心痛点不在多模态处理本身，而在**结构化数据基础设施与多模态能力的衔接**。
+
+**Daft 单独使用的短板**：
+
+| 维度 | StarRocks | Daft |
+|------|-----------|------|
+| 存储 | 列式存储引擎，zone map / bloom filter / 倒排索引 / 多级缓存 | 无存储，依赖外部 Parquet/S3 |
+| SQL 优化 | 成熟 CBO，统计信息驱动，物化视图自动 rewrite | 基础查询优化，无 CBO |
+| 并发分析 | MPP 向量化执行，万亿行级，百并发 | 单任务为主，百 GB-TB 级 |
+| 数据治理 | ACID、RBAC、审计、多租户隔离 | 无 |
+| 实时写入 | 秒级可见的实时导入 | 无 |
+
+对于企业 80% 的工作负载（SQL 报表、ETL、实时看板），StarRocks 比任何 Python DataFrame 引擎强一个量级。Daft 的价值在剩下的 20%——多模态处理、ML 推理、图像/文本分析。
+
+**StarRocks DataFrame 的核心价值是：让用户在 StarRocks 数据基础设施上，用统一的 DataFrame API 同时完成结构化分析和多模态处理，数据不搬家、治理不断裂。**
+
+以下三个场景说明"结构化 + 多模态"的衔接为什么不能分裂成两个系统：
+
+**场景 1：电商商品智能标注**
+
+10 亿商品存储在 StarRocks（品类、价格、销量、库存、图片 URL）。运营需要对"电子类、月销 > 1000、无标签"的商品批量生成 CLIP embedding 用于以图搜图。
+
+```python
+# StarRocks DataFrame：一条管道，结构化筛选在 StarRocks（索引加速），embedding 生成在 Daft
+session.table("products") \
+    .filter((col("category") == "electronics") & (col("monthly_sales") > 1000) & col("tags").is_null()) \
+    .map_batches(generate_clip_embedding) \
+    .to_starrocks("product_embeddings")
+```
+
+纯 Daft 做法：先从 StarRocks 导出数据到 Parquet/S3（ETL 管道、调度、数据一致性），再用 Daft 读取处理，最后导回 StarRocks（又一个 ETL）。三步变一步，且中间的筛选无法利用 StarRocks 的索引。
+
+**场景 2：日志异常检测**
+
+百亿行日志存储在 StarRocks，建有倒排索引（全文检索）和时间分区。安全团队需要对"最近 1 小时、包含 'authentication failed' 的日志"跑异常检测模型。
+
+```python
+# StarRocks 倒排索引 + 时间分区裁剪：百亿行中毫秒级定位候选集（可能只有几千行）
+# 只有候选集进入 ML 模型，而不是全量扫描
+session.table("security_logs") \
+    .filter(col("ts") >= "2026-04-30 09:00:00") \
+    .filter(col("message").match_phrase("authentication failed")) \
+    .map_batches(anomaly_detect_model) \
+    .filter(col("anomaly_score") > 0.9) \
+    .to_pandas()
+```
+
+纯 Daft：无倒排索引、无分区裁剪。要么全量扫描百亿行（小时级），要么自建索引基础设施（等于重建 StarRocks 的存储层）。
+
+**场景 3：统一数据平台**
+
+同一份数据同时服务 BI 看板（SQL，亚秒响应，百并发）和数据科学团队（Python，ML 实验）。
+
+- StarRocks DataFrame：一个系统、一个连接、一套权限。BI 用 SQL，数据科学用 DataFrame API + `map_batches`，底层同一份数据。
+- 纯 Daft + 独立 BI 工具：两套系统、两套权限、数据一致性需要额外保障（ETL 同步延迟、schema drift）。
+
 ---
 
 ## 4. 业界方案调研与选型
@@ -382,20 +440,11 @@ python/starrocks/                   # 主仓库 python/ 目录
 
 **Daft 模式**：Rust 执行内核 + 查询优化器，专为多模态数据设计（Image/Tensor/Embedding 一等类型）。无 SQL 引擎，结构化 OLAP 能力远弱于 StarRocks。
 
-### 9.2 Snowflake 路线的优劣势分析
+### 9.2 Snowflake 路线的多模态短板
 
-**优势**集中在结构化数据场景：
+StarRocks 在结构化场景的绝对优势已在 §3.3 论证。这里关注：如果走 Snowflake 路线（SQL 引擎 + 容器化 Python 扩展），多模态/ML 场景的短板在哪？
 
-| 维度 | Snowflake 路线 | Daft |
-|------|---------------|------|
-| SQL 优化器 | 成熟 CBO，统计信息、物化视图、自动 rewrite | 基础查询优化，无 CBO |
-| 存储引擎 | 列式存储，zone map、bloom filter、多级缓存 | 依赖外部存储 |
-| 并发与治理 | ACID、RBAC、多租户隔离 | 无 |
-| 结构化查询性能 | MPP + 向量化执行，万亿行级 | 百 GB-TB 级 |
-
-对于企业 80% 的工作负载（SQL 分析、报表、ETL），StarRocks 比任何 Python DataFrame 引擎强一个量级。
-
-**短板**在多模态/ML 场景——Daft 在多模态处理上显著优于 Ray Data / Container Services：
+Daft 在多模态处理上显著优于 Snowflake Container Services / Ray Data：
 
 | 能力 | Daft | Ray Data / Container Services |
 |------|------|-------------------------------|
