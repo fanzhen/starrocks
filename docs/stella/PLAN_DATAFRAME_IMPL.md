@@ -935,7 +935,7 @@ DataFrame API 支持多模态类型标注（Image, Tensor, Embedding），与 Da
 >
 > **对应 DESIGN §9.5**: 目标架构：FE 路由 + Daft Coordinator Sidecar
 >
-> **状态**: Phase 16 ✅ 完成 → Phase 17a 待开始
+> **状态**: Phase 17a ✅ 完成 → Phase 17b 待开始
 >
 > **前置依赖**: Stage 1-4 完成（SQL 引擎 + POC 客户端路由已验证混合管道可行）
 >
