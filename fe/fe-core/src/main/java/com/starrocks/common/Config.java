@@ -4451,4 +4451,22 @@ public class Config extends ConfigBase {
     @ConfField(mutable = true, comment = "Allow private IPs (127.x, 10.x, 192.168.x, 172.16-31.x) if in allowlist. " +
             "Default false for security. Set true to allow internal service calls.")
     public static boolean http_request_allow_private_in_allowlist = false;
+
+    /**
+     * Enable Daft Coordinator integration for hybrid SQL+Python pipelines.
+     */
+    @ConfField(mutable = true)
+    public static boolean enable_daft_coordinator = false;
+
+    /**
+     * Daft Coordinator gRPC host.
+     */
+    @ConfField(mutable = true)
+    public static String daft_coordinator_host = "127.0.0.1";
+
+    /**
+     * Daft Coordinator gRPC port.
+     */
+    @ConfField(mutable = true)
+    public static int daft_coordinator_port = 50051;
 }

@@ -1,0 +1,93 @@
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+package starrocks.coordinator;
+
+option java_package = "com.starrocks.proto.coordinator";
+option java_outer_classname = "CoordinatorProto";
+option java_multiple_files = true;
+
+service DaftCoordinator {
+  // Submit a Daft execution plan, return Arrow IPC results (server streaming).
+  rpc SubmitDaftPlan(DaftPlanRequest) returns (stream DaftPlanResponse);
+  // Register a Python function for use in map_batches.
+  rpc RegisterFunction(RegisterFunctionRequest) returns (RegisterFunctionResponse);
+  // Health check and status query.
+  rpc GetStatus(StatusRequest) returns (StatusResponse);
+}
+
+message DaftPlanRequest {
+  string request_id = 1;
+  // Arrow Flight endpoint for pulling SQL segment results.
+  string arrow_flight_endpoint = 2;
+  // SQL query to execute on StarRocks (Coordinator pulls data as Daft input).
+  string source_sql = 3;
+  // Ordered sequence of Daft operations to apply.
+  repeated DaftOperation operations = 4;
+}
+
+message DaftOperation {
+  oneof op {
+    MapBatchesOp map_batches = 1;
+    FilterOp filter = 2;
+    ProjectionOp projection = 3;
+    LimitOp limit = 4;
+  }
+}
+
+message MapBatchesOp {
+  string function_name = 1;  // Name of a registered function.
+}
+
+message FilterOp {
+  string expr_json = 1;  // Serialized filter expression (JSON).
+}
+
+message ProjectionOp {
+  repeated string columns = 1;
+}
+
+message LimitOp {
+  int64 count = 1;
+}
+
+message DaftPlanResponse {
+  oneof result {
+    bytes arrow_ipc_batch = 1;  // Arrow IPC RecordBatch bytes.
+    string error = 2;
+  }
+  bool is_last = 3;
+}
+
+// Function registration.
+message RegisterFunctionRequest {
+  string function_name = 1;
+  string module_path = 2;   // e.g. "mymodule.transforms"
+  string callable_name = 3; // e.g. "clip_embed"
+}
+
+message RegisterFunctionResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// Status query.
+message StatusRequest {}
+
+message StatusResponse {
+  string status = 1;            // SERVING / NOT_SERVING
+  int32 registered_functions = 2;
+  map<string, string> ray_resources = 3;
+}
