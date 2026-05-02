@@ -26,9 +26,11 @@ import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.UserIdentity;
 import com.starrocks.common.AlreadyExistsException;
+import com.starrocks.common.DaftCoordinatorException;
 import com.starrocks.common.Config;
 import com.starrocks.common.ConfigBase;
 import com.starrocks.common.DdlException;
+import com.starrocks.service.DaftCoordinatorClient;
 import com.starrocks.common.ErrorCode;
 import com.starrocks.common.ErrorReport;
 import com.starrocks.common.MetaNotFoundException;
@@ -48,6 +50,8 @@ import com.starrocks.sql.analyzer.FunctionRefAnalyzer;
 import com.starrocks.sql.analyzer.SemanticException;
 import com.starrocks.sql.ast.AdminAlterAutomatedSnapshotIntervalStmt;
 import com.starrocks.sql.ast.AdminCancelRepairTableStmt;
+import com.starrocks.sql.ast.AdminCreateDaftFunctionStmt;
+import com.starrocks.sql.ast.AdminDropDaftFunctionStmt;
 import com.starrocks.sql.ast.AdminCheckTabletsStmt;
 import com.starrocks.sql.ast.AdminRepairTableStmt;
 import com.starrocks.sql.ast.AdminSetAutomatedSnapshotOffStmt;
@@ -1452,6 +1456,51 @@ public class DDLStmtExecutor {
             ErrorReport.wrapWithRuntimeException(() -> {
                 context.getGlobalStateMgr().getClusterSnapshotMgr().setAutomatedSnapshotInterval(stmt);
             });
+            return null;
+        }
+
+        @Override
+        public ShowResultSet visitAdminCreateDaftFunctionStatement(AdminCreateDaftFunctionStmt stmt,
+                                                                    ConnectContext context) {
+            if (!Config.enable_daft_coordinator) {
+                throw new RuntimeException("Daft Coordinator is not enabled. " +
+                        "Set enable_daft_coordinator=true in FE config.");
+            }
+            java.util.Map<String, String> props = stmt.getProperties();
+            String modulePath = props.get("module_path");
+            String callableName = props.get("callable_name");
+            if (modulePath == null || callableName == null) {
+                throw new RuntimeException(
+                        "PROPERTIES must include 'module_path' and 'callable_name'");
+            }
+            DaftCoordinatorClient client = new DaftCoordinatorClient(
+                    Config.daft_coordinator_host, Config.daft_coordinator_port);
+            try {
+                client.registerFunction(stmt.getFunctionName(), modulePath, callableName);
+            } catch (DaftCoordinatorException e) {
+                throw new RuntimeException(e.getMessage(), e);
+            } finally {
+                client.close();
+            }
+            return null;
+        }
+
+        @Override
+        public ShowResultSet visitAdminDropDaftFunctionStatement(AdminDropDaftFunctionStmt stmt,
+                                                                  ConnectContext context) {
+            if (!Config.enable_daft_coordinator) {
+                throw new RuntimeException("Daft Coordinator is not enabled. " +
+                        "Set enable_daft_coordinator=true in FE config.");
+            }
+            DaftCoordinatorClient client = new DaftCoordinatorClient(
+                    Config.daft_coordinator_host, Config.daft_coordinator_port);
+            try {
+                client.unregisterFunction(stmt.getFunctionName());
+            } catch (DaftCoordinatorException e) {
+                throw new RuntimeException(e.getMessage(), e);
+            } finally {
+                client.close();
+            }
             return null;
         }
 

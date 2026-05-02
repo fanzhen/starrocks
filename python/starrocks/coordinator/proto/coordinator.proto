@@ -8,6 +8,10 @@ service DaftCoordinator {
   rpc RegisterFunction(RegisterFunctionRequest) returns (RegisterFunctionResponse);
   // Health check and status query.
   rpc GetStatus(StatusRequest) returns (StatusResponse);
+  // List all registered functions.
+  rpc ListFunctions(ListFunctionsRequest) returns (ListFunctionsResponse);
+  // Unregister a previously registered function.
+  rpc UnregisterFunction(UnregisterFunctionRequest) returns (UnregisterFunctionResponse);
 }
 
 message DaftPlanRequest {
@@ -64,6 +68,29 @@ message RegisterFunctionRequest {
 }
 
 message RegisterFunctionResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// List functions.
+message ListFunctionsRequest {}
+
+message ListFunctionsResponse {
+  repeated DaftFunctionInfo functions = 1;
+}
+
+message DaftFunctionInfo {
+  string name = 1;
+  string module_path = 2;
+  string callable_name = 3;
+}
+
+// Unregister function.
+message UnregisterFunctionRequest {
+  string function_name = 1;
+}
+
+message UnregisterFunctionResponse {
   bool success = 1;
   string message = 2;
 }

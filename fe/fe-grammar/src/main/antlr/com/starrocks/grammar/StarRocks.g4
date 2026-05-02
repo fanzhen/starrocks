@@ -134,6 +134,9 @@ statement
     | adminSetAutomatedSnapshotOnStatement
     | adminSetAutomatedSnapshotOffStatement
     | adminAlterAutomatedSnapshotIntervalStatement
+    | adminCreateDaftFunctionStatement
+    | adminDropDaftFunctionStatement
+    | adminShowDaftFunctionsStatement
 
     // Cluster Management Statement
     | alterSystemStatement
@@ -831,6 +834,18 @@ adminSetAutomatedSnapshotOffStatement
 
 adminAlterAutomatedSnapshotIntervalStatement
     : ADMIN ALTER AUTOMATED CLUSTER SNAPSHOT SET interval
+    ;
+
+adminCreateDaftFunctionStatement
+    : ADMIN CREATE DAFT FUNCTION string properties
+    ;
+
+adminDropDaftFunctionStatement
+    : ADMIN DROP DAFT FUNCTION string
+    ;
+
+adminShowDaftFunctionsStatement
+    : ADMIN SHOW DAFT FUNCTIONS
     ;
 
 // ------------------------------------------- Cluster Management Statement ---------------------------------------------
@@ -3289,7 +3304,7 @@ nonReserved
     | CACHE | CALL | CAST | CANCEL | CATALOG | CATALOGS | CEIL | CHAIN | CHARSET | CLEAN | CLEAR | CLUSTER | CLUSTERS | CNGROUP | CNGROUPS | CURRENT | COLLATION | COLUMNS
     | CUME_DIST | CUMULATIVE | COMMENT | COMMIT | COMMITTED | COMPUTE | CONNECTION | CONNECTIONS | CONSISTENT | COSTS | COUNT
     | CONFIG | COMPACT
-    | DATA | DATE | DATACACHE | DATETIME | DAY | DAYS | DECOMMISSION | DIALECT | DIGEST | DISABLE | DISK | DISTRIBUTION | DUPLICATE | DYNAMIC | DISTRIBUTED | DICTIONARY | DICTIONARY_GET | DEALLOCATE
+    | DAFT | DATA | DATE | DATACACHE | DATETIME | DAY | DAYS | DECOMMISSION | DIALECT | DIGEST | DISABLE | DISK | DISTRIBUTION | DUPLICATE | DYNAMIC | DISTRIBUTED | DICTIONARY | DICTIONARY_GET | DEALLOCATE
     | ENABLE | END | ENGINE | ENGINES | ERRORS | EVENTS | EXECUTE | EXTERNAL | EXTRACT | EVERY | ENCLOSE | ESCAPE | EXPORT
     | FAILPOINT | FAILPOINTS | FIELDS | FILE | FILTER | FIRST | FLOOR | FOLLOWING | FORMAT | FN | FRONTEND | FRONTENDS | FOLLOWER | FREE
     | FUNCTIONS

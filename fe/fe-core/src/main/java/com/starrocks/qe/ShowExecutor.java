@@ -83,6 +83,7 @@ import com.starrocks.catalog.View;
 import com.starrocks.clone.DynamicPartitionScheduler;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.CaseSensibility;
+import com.starrocks.common.Config;
 import com.starrocks.common.ConfigBase;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.ErrorCode;
@@ -144,6 +145,9 @@ import com.starrocks.server.RunMode;
 import com.starrocks.server.StorageVolumeMgr;
 import com.starrocks.server.TemporaryTableMgr;
 import com.starrocks.server.WarehouseManager;
+import com.starrocks.coordinator.proto.DaftFunctionInfo;
+import com.starrocks.common.DaftCoordinatorException;
+import com.starrocks.service.DaftCoordinatorClient;
 import com.starrocks.service.ExecuteEnv;
 import com.starrocks.service.InformationSchemaDataSource;
 import com.starrocks.sql.analyzer.AnalyzerUtils;
@@ -151,6 +155,7 @@ import com.starrocks.sql.analyzer.AstToStringBuilder;
 import com.starrocks.sql.analyzer.Authorizer;
 import com.starrocks.sql.analyzer.SemanticException;
 import com.starrocks.sql.ast.AdminShowAutomatedSnapshotStmt;
+import com.starrocks.sql.ast.AdminShowDaftFunctionsStmt;
 import com.starrocks.sql.ast.AdminShowConfigStmt;
 import com.starrocks.sql.ast.AdminShowReplicaDistributionStmt;
 import com.starrocks.sql.ast.AdminShowReplicaStatusStmt;
@@ -2459,6 +2464,29 @@ public class ShowExecutor {
                                                                       ConnectContext context) {
             return new ShowResultSet(showResultMetaFactory.getMetadata(statement),
                     GlobalStateMgr.getCurrentState().getClusterSnapshotMgr().getAutomatedSnapshotShowResult());
+        }
+
+        @Override
+        public ShowResultSet visitAdminShowDaftFunctionsStatement(AdminShowDaftFunctionsStmt statement,
+                                                                   ConnectContext context) {
+            if (!Config.enable_daft_coordinator) {
+                throw new SemanticException("Daft Coordinator is not enabled. " +
+                        "Set enable_daft_coordinator=true in FE config.");
+            }
+            DaftCoordinatorClient client = new DaftCoordinatorClient(
+                    Config.daft_coordinator_host, Config.daft_coordinator_port);
+            try {
+                java.util.List<DaftFunctionInfo> funcs = client.listFunctions();
+                List<List<String>> rows = Lists.newArrayList();
+                for (DaftFunctionInfo f : funcs) {
+                    rows.add(Lists.newArrayList(f.getName(), f.getModulePath(), f.getCallableName()));
+                }
+                return new ShowResultSet(showResultMetaFactory.getMetadata(statement), rows);
+            } catch (DaftCoordinatorException e) {
+                throw new SemanticException(e.getMessage());
+            } finally {
+                client.close();
+            }
         }
 
         @Override

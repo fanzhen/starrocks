@@ -616,6 +616,18 @@ public interface AstVisitor<R, C> {
         return visitDDLStatement(statement, context);
     }
 
+    default R visitAdminCreateDaftFunctionStatement(AdminCreateDaftFunctionStmt statement, C context) {
+        return visitDDLStatement(statement, context);
+    }
+
+    default R visitAdminDropDaftFunctionStatement(AdminDropDaftFunctionStmt statement, C context) {
+        return visitDDLStatement(statement, context);
+    }
+
+    default R visitAdminShowDaftFunctionsStatement(AdminShowDaftFunctionsStmt statement, C context) {
+        return visitShowStatement(statement, context);
+    }
+
     // ------------------------------------------- System Management Statement ----------------------------------------------------
 
     default R visitAlterSystemStatement(AlterSystemStmt statement, C context) {

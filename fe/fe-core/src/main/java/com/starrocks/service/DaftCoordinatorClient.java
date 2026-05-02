@@ -20,8 +20,15 @@ import com.starrocks.coordinator.proto.DaftOperation;
 import com.starrocks.coordinator.proto.DaftPlanRequest;
 import com.starrocks.coordinator.proto.DaftPlanResponse;
 import com.starrocks.coordinator.proto.MapBatchesOp;
+import com.starrocks.coordinator.proto.DaftFunctionInfo;
+import com.starrocks.coordinator.proto.ListFunctionsRequest;
+import com.starrocks.coordinator.proto.ListFunctionsResponse;
+import com.starrocks.coordinator.proto.RegisterFunctionRequest;
+import com.starrocks.coordinator.proto.RegisterFunctionResponse;
 import com.starrocks.coordinator.proto.StatusRequest;
 import com.starrocks.coordinator.proto.StatusResponse;
+import com.starrocks.coordinator.proto.UnregisterFunctionRequest;
+import com.starrocks.coordinator.proto.UnregisterFunctionResponse;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.StatusRuntimeException;
@@ -133,6 +140,65 @@ public class DaftCoordinatorClient {
             LOG.warn("submitDaftPlan unexpected error", e);
             throw new DaftCoordinatorException(
                     "Daft Coordinator error: " + e.getMessage(), e);
+        }
+    }
+
+    public void registerFunction(String name, String modulePath, String callableName)
+            throws DaftCoordinatorException {
+        ensureChannel();
+        try {
+            RegisterFunctionResponse resp = stub
+                    .withDeadlineAfter(DEADLINE_SECONDS, TimeUnit.SECONDS)
+                    .registerFunction(RegisterFunctionRequest.newBuilder()
+                            .setFunctionName(name)
+                            .setModulePath(modulePath)
+                            .setCallableName(callableName)
+                            .build());
+            if (!resp.getSuccess()) {
+                throw new DaftCoordinatorException(
+                        "Failed to register function: " + resp.getMessage());
+            }
+        } catch (DaftCoordinatorException e) {
+            throw e;
+        } catch (StatusRuntimeException e) {
+            LOG.warn("registerFunction failed: {}", e.getStatus(), e);
+            throw new DaftCoordinatorException(
+                    "Daft Coordinator unavailable: " + e.getStatus().getDescription(), e);
+        }
+    }
+
+    public void unregisterFunction(String name) throws DaftCoordinatorException {
+        ensureChannel();
+        try {
+            UnregisterFunctionResponse resp = stub
+                    .withDeadlineAfter(DEADLINE_SECONDS, TimeUnit.SECONDS)
+                    .unregisterFunction(UnregisterFunctionRequest.newBuilder()
+                            .setFunctionName(name)
+                            .build());
+            if (!resp.getSuccess()) {
+                throw new DaftCoordinatorException(
+                        "Failed to unregister function: " + resp.getMessage());
+            }
+        } catch (DaftCoordinatorException e) {
+            throw e;
+        } catch (StatusRuntimeException e) {
+            LOG.warn("unregisterFunction failed: {}", e.getStatus(), e);
+            throw new DaftCoordinatorException(
+                    "Daft Coordinator unavailable: " + e.getStatus().getDescription(), e);
+        }
+    }
+
+    public List<DaftFunctionInfo> listFunctions() throws DaftCoordinatorException {
+        ensureChannel();
+        try {
+            ListFunctionsResponse resp = stub
+                    .withDeadlineAfter(DEADLINE_SECONDS, TimeUnit.SECONDS)
+                    .listFunctions(ListFunctionsRequest.getDefaultInstance());
+            return resp.getFunctionsList();
+        } catch (StatusRuntimeException e) {
+            LOG.warn("listFunctions failed: {}", e.getStatus(), e);
+            throw new DaftCoordinatorException(
+                    "Daft Coordinator unavailable: " + e.getStatus().getDescription(), e);
         }
     }
 

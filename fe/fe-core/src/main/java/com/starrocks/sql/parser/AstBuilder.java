@@ -67,6 +67,8 @@ import com.starrocks.sql.ast.AddSqlBlackListStmt;
 import com.starrocks.sql.ast.AddSqlDigestBlackListStmt;
 import com.starrocks.sql.ast.AdminAlterAutomatedSnapshotIntervalStmt;
 import com.starrocks.sql.ast.AdminCancelRepairTableStmt;
+import com.starrocks.sql.ast.AdminCreateDaftFunctionStmt;
+import com.starrocks.sql.ast.AdminDropDaftFunctionStmt;
 import com.starrocks.sql.ast.AdminCheckTabletsStmt;
 import com.starrocks.sql.ast.AdminRepairTableStmt;
 import com.starrocks.sql.ast.AdminSetAutomatedSnapshotOffStmt;
@@ -75,6 +77,7 @@ import com.starrocks.sql.ast.AdminSetConfigStmt;
 import com.starrocks.sql.ast.AdminSetPartitionVersionStmt;
 import com.starrocks.sql.ast.AdminSetReplicaStatusStmt;
 import com.starrocks.sql.ast.AdminShowAutomatedSnapshotStmt;
+import com.starrocks.sql.ast.AdminShowDaftFunctionsStmt;
 import com.starrocks.sql.ast.AdminShowConfigStmt;
 import com.starrocks.sql.ast.AdminShowReplicaDistributionStmt;
 import com.starrocks.sql.ast.AdminShowReplicaStatusStmt;
@@ -3060,6 +3063,28 @@ public class AstBuilder extends com.starrocks.sql.parser.StarRocksBaseVisitor<Pa
             com.starrocks.sql.parser.StarRocksParser.AdminAlterAutomatedSnapshotIntervalStatementContext context) {
         IntervalLiteral intervalLiteral = (IntervalLiteral) visit(context.interval());
         return new AdminAlterAutomatedSnapshotIntervalStmt(intervalLiteral, createPos(context));
+    }
+
+    @Override
+    public ParseNode visitAdminCreateDaftFunctionStatement(
+            com.starrocks.sql.parser.StarRocksParser.AdminCreateDaftFunctionStatementContext context) {
+        String functionName = ((StringLiteral) visit(context.string())).getStringValue();
+        Map<String, String> properties =
+                getCaseSensitivePropertyList(context.properties().propertyList());
+        return new AdminCreateDaftFunctionStmt(functionName, properties, createPos(context));
+    }
+
+    @Override
+    public ParseNode visitAdminDropDaftFunctionStatement(
+            com.starrocks.sql.parser.StarRocksParser.AdminDropDaftFunctionStatementContext context) {
+        String functionName = ((StringLiteral) visit(context.string())).getStringValue();
+        return new AdminDropDaftFunctionStmt(functionName, createPos(context));
+    }
+
+    @Override
+    public ParseNode visitAdminShowDaftFunctionsStatement(
+            com.starrocks.sql.parser.StarRocksParser.AdminShowDaftFunctionsStatementContext context) {
+        return new AdminShowDaftFunctionsStmt(createPos(context));
     }
 
     // ------------------------------------------- Cluster Management Statement ----------------------------------------

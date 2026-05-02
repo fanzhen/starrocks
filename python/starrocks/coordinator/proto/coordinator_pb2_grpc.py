@@ -2,7 +2,7 @@
 """Client and server classes corresponding to protobuf-defined services."""
 import grpc
 
-import coordinator_pb2 as coordinator__pb2
+from starrocks.coordinator.proto import coordinator_pb2 as coordinator__pb2
 
 
 class DaftCoordinatorStub(object):
@@ -28,6 +28,16 @@ class DaftCoordinatorStub(object):
                 '/starrocks.coordinator.DaftCoordinator/GetStatus',
                 request_serializer=coordinator__pb2.StatusRequest.SerializeToString,
                 response_deserializer=coordinator__pb2.StatusResponse.FromString,
+                )
+        self.ListFunctions = channel.unary_unary(
+                '/starrocks.coordinator.DaftCoordinator/ListFunctions',
+                request_serializer=coordinator__pb2.ListFunctionsRequest.SerializeToString,
+                response_deserializer=coordinator__pb2.ListFunctionsResponse.FromString,
+                )
+        self.UnregisterFunction = channel.unary_unary(
+                '/starrocks.coordinator.DaftCoordinator/UnregisterFunction',
+                request_serializer=coordinator__pb2.UnregisterFunctionRequest.SerializeToString,
+                response_deserializer=coordinator__pb2.UnregisterFunctionResponse.FromString,
                 )
 
 
@@ -55,6 +65,20 @@ class DaftCoordinatorServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListFunctions(self, request, context):
+        """List all registered functions.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def UnregisterFunction(self, request, context):
+        """Unregister a previously registered function.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_DaftCoordinatorServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -72,6 +96,16 @@ def add_DaftCoordinatorServicer_to_server(servicer, server):
                     servicer.GetStatus,
                     request_deserializer=coordinator__pb2.StatusRequest.FromString,
                     response_serializer=coordinator__pb2.StatusResponse.SerializeToString,
+            ),
+            'ListFunctions': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListFunctions,
+                    request_deserializer=coordinator__pb2.ListFunctionsRequest.FromString,
+                    response_serializer=coordinator__pb2.ListFunctionsResponse.SerializeToString,
+            ),
+            'UnregisterFunction': grpc.unary_unary_rpc_method_handler(
+                    servicer.UnregisterFunction,
+                    request_deserializer=coordinator__pb2.UnregisterFunctionRequest.FromString,
+                    response_serializer=coordinator__pb2.UnregisterFunctionResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -131,5 +165,39 @@ class DaftCoordinator(object):
         return grpc.experimental.unary_unary(request, target, '/starrocks.coordinator.DaftCoordinator/GetStatus',
             coordinator__pb2.StatusRequest.SerializeToString,
             coordinator__pb2.StatusResponse.FromString,
+            options, channel_credentials,
+            insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
+
+    @staticmethod
+    def ListFunctions(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(request, target, '/starrocks.coordinator.DaftCoordinator/ListFunctions',
+            coordinator__pb2.ListFunctionsRequest.SerializeToString,
+            coordinator__pb2.ListFunctionsResponse.FromString,
+            options, channel_credentials,
+            insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
+
+    @staticmethod
+    def UnregisterFunction(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(request, target, '/starrocks.coordinator.DaftCoordinator/UnregisterFunction',
+            coordinator__pb2.UnregisterFunctionRequest.SerializeToString,
+            coordinator__pb2.UnregisterFunctionResponse.FromString,
             options, channel_credentials,
             insecure, call_credentials, compression, wait_for_ready, timeout, metadata)

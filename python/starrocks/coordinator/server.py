@@ -98,6 +98,30 @@ class DaftCoordinatorServicer(coordinator_pb2_grpc.DaftCoordinatorServicer):
                 message=f"{type(e).__name__}: {e}",
             )
 
+    def ListFunctions(self, request, context):
+        """List all registered functions."""
+        funcs = self._registry.list_functions()
+        return coordinator_pb2.ListFunctionsResponse(
+            functions=[
+                coordinator_pb2.DaftFunctionInfo(
+                    name=name,
+                    module_path=meta.rsplit(".", 1)[0],
+                    callable_name=meta.rsplit(".", 1)[1],
+                )
+                for name, meta in funcs.items()
+            ]
+        )
+
+    def UnregisterFunction(self, request, context):
+        """Unregister a previously registered function."""
+        name = request.function_name
+        logger.info("UnregisterFunction: %s", name)
+        self._registry.unregister(name)
+        return coordinator_pb2.UnregisterFunctionResponse(
+            success=True,
+            message=f"Unregistered {name}",
+        )
+
     def GetStatus(self, request, context):
         """Return service status, registered function count, and Ray resources."""
         ray_resources: dict[str, str] = {}

@@ -35,6 +35,7 @@ import com.starrocks.common.proc.SchemaChangeProcDir;
 import com.starrocks.common.proc.TransProcDir;
 import com.starrocks.sql.ast.AdminRepairTableStmt;
 import com.starrocks.sql.ast.AdminShowAutomatedSnapshotStmt;
+import com.starrocks.sql.ast.AdminShowDaftFunctionsStmt;
 import com.starrocks.sql.ast.AdminShowConfigStmt;
 import com.starrocks.sql.ast.AdminShowReplicaDistributionStmt;
 import com.starrocks.sql.ast.AdminShowReplicaStatusStmt;
@@ -807,6 +808,16 @@ public class ShowResultMetaFactory implements AstVisitorExtendInterface<ShowResu
                 .addColumn(new Column("StorageVolume", TypeFactory.createVarcharType(256)))
                 .addColumn(new Column("LastSnapshotTime", TypeFactory.createVarcharType(20)))
                 .addColumn(new Column("NextSnapshotTime", TypeFactory.createVarcharType(20)))
+                .build();
+    }
+
+    @Override
+    public ShowResultSetMetaData visitAdminShowDaftFunctionsStatement(AdminShowDaftFunctionsStmt statement,
+                                                                       Void context) {
+        return ShowResultSetMetaData.builder()
+                .addColumn(new Column("Name", TypeFactory.createVarcharType(256)))
+                .addColumn(new Column("ModulePath", TypeFactory.createVarcharType(256)))
+                .addColumn(new Column("CallableName", TypeFactory.createVarcharType(256)))
                 .build();
     }
 
