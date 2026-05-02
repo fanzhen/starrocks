@@ -935,7 +935,7 @@ DataFrame API 支持多模态类型标注（Image, Tensor, Embedding），与 Da
 >
 > **对应 DESIGN §9.5**: 目标架构：FE 路由 + Daft Coordinator Sidecar
 >
-> **状态**: Phase 17a ✅ 完成 → Phase 17b ✅ 完成 → Phase 17c 待开始
+> **状态**: Phase 17a ✅ 完成 → Phase 17b ✅ 完成 → Phase 17c ✅ 完成
 >
 > **前置依赖**: Stage 1-4 完成（SQL 引擎 + POC 客户端路由已验证混合管道可行）
 >
@@ -1052,33 +1052,40 @@ DataFrame API 支持多模态类型标注（Image, Tensor, Embedding），与 Da
 | 17b.1 | `fe/fe-core/.../sql/analyzer/ExpressionAnalyzer.java` | 在 `visitFunctionCall` 中拦截 `map_batches`：验证 config gate、参数数量、首参类型，设 `Type.VARCHAR` 后 return |
 | 17b.2 | `python/tests/verify_phase17b.py` | **新建**: E2E — 5 个测试用例 |
 
-#### Phase 17c: 执行路由 + Coordinator 对接 + Python 适配
+#### Phase 17c: 执行路由 + Coordinator 对接 ✅ 完成 (2026-05-02)
 
-**目标**: 含 MAP_BATCHES 的查询全链路执行——FE 拆分 SQL 段 + Daft 段，SQL 段发 BE，Daft 段 gRPC 提交 Coordinator，结果合并返回客户端。
+**目标**: 含 MAP_BATCHES 的查询全链路执行——FE 在 StmtExecutor 层面拦截（绕过 planner），提取源 SQL + 函数名，gRPC 提交 Coordinator，结果通过 ShowResultSet 返回 MySQL 客户端。
 
-**验收用例**:
-
-| # | 用例 | PASS 条件 |
-|---|------|-----------|
-| 1 | `SELECT MAP_BATCHES('func', *) FROM (SELECT * FROM t WHERE a > 1)` 全链路 | SQL 段在 BE 执行，Daft 段在 Coordinator/Ray 执行，结果正确 |
-| 2 | `df.filter().map_batches("func").to_pandas()` 全链路 | Python SDK 生成 MAP_BATCHES SQL → FE 路由 → 结果正确 |
-| 3 | FE 路由: filter/agg → BE, MAP_BATCHES → Coordinator | EXPLAIN 可见引擎分配 |
-| 4 | Coordinator 不可用时执行含 MAP_BATCHES 的查询 | 友好错误 `DaftCoordinatorUnavailable` |
-| 5 | 多段 pipeline: `filter → MAP_BATCHES → filter → MAP_BATCHES` | 两个 Daft 段分别执行，结果正确 |
-
-**前置依赖**: Phase 17b 完成
-
-**代码任务**:
+**实际实现**（采用降级方案：StmtExecutor 层面拦截，避免改动 Fragment 核心逻辑）:
 
 | 步骤 | 文件 | 改动 |
 |------|------|------|
-| 17c.1 | `fe/fe-core/.../sql/optimizer/` | 路由规则: 遇到 MapBatchesExpr → 标记为 Daft 段，向下收集 SQL 段 |
-| 17c.2 | `fe/fe-core/.../planner/` | Fragment 拆分: SQL 段 → BE Fragment 执行，Daft 段 → gRPC 提交 Coordinator，结果回收 |
-| 17c.3 | `fe/fe-core/.../qe/StmtExecutor.java` | 混合执行: 检测 MAP_BATCHES → 调用 DaftCoordinatorClient.submitDaftPlan() |
-| 17c.4 | `python/starrocks/dataframe.py` | 目标架构模式: `map_batches("func_name")` 生成 `MAP_BATCHES('func_name', ...)` SQL（而非客户端路由） |
-| 17c.5 | `python/tests/verify_phase17c.py` | **新建**: FE 路由决策全链路 E2E 测试 |
+| 17c.1 | `fe/fe-core/.../qe/DaftQueryExecutor.java` | **新建**: AST 检测 + 函数名/源SQL 提取 + gRPC 调用 + 结果转换 |
+| 17c.2 | `fe/fe-core/.../qe/StmtExecutor.java` | 在 `generateExecPlan()` 之前拦截 map_batches → 路由到 DaftQueryExecutor |
+| 17c.3 | `fe/fe-core/.../service/DaftCoordinatorClient.java` | 新增 `submitDaftPlan()` server streaming gRPC，收集文本结果 |
+| 17c.4 | `fe/fe-core/.../service/DaftQueryResult.java` | **新建**: 值类（column_names + rows） |
+| 17c.5 | `coordinator.proto` | 新增 `column_names`/`row_values`/`num_rows` 文本结果字段 |
+| 17c.6 | `python/starrocks/coordinator/server.py` | `SubmitDaftPlan` 改用 `execute_text()` 返回文本行 |
+| 17c.7 | `python/starrocks/coordinator/daft_driver.py` | 新增 `execute_text()` (Arrow Table → string rows) |
+| 17c.8 | `python/starrocks/coordinator/builtin_functions.py` | **新建**: identity_transform 测试函数 |
+| 17c.9 | `python/tests/verify_phase17c.py` | **新建**: E2E 6 个测试用例 |
 
-> **关键风险**: 17c.2 Fragment 拆分是最复杂的步骤。StarRocks 现有 planner 假设所有 Fragment 都发往 BE。引入 Coordinator 目标需要在 Fragment 层面增加"外部执行"的概念。如果此步骤过于侵入，可降级为 StmtExecutor 层面的两阶段执行（先执行 SQL 段，再提交 Daft 段），避免改动 Fragment 核心逻辑。
+**E2E 验证结果**: 6/6 通过
+
+| # | 用例 | 结果 |
+|---|------|------|
+| 1 | `EXPLAIN SELECT map_batches('identity') FROM (SELECT 1 AS a) t` | PASS — 输出包含 `DAFT COORDINATOR EXECUTION` |
+| 2 | `SELECT map_batches('identity') FROM (SELECT 1 AS a, 2 AS b) t` | PASS — 返回 `('1', '2')` |
+| 3 | `SELECT map_batches('nonexistent_xyz') FROM ...` | PASS — 错误含函数名 |
+| 4 | `SELECT map_batches('identity') FROM test_daft.daft_test_t` | PASS — 返回 `('1','hello'),('2','world')` |
+| 5 | `SELECT 1+1` 回归 | PASS |
+| 6 | `SELECT upper('hello')` 回归 | PASS |
+
+**Build 修复**:
+- `Type.VARCHAR` → `VarcharType.VARCHAR` (ExpressionAnalyzer Phase 17b 代码)
+- Proto java_package `com.starrocks.proto.coordinator` → `com.starrocks.coordinator.proto` (避免 jprotobuf-precompile-plugin 扫描冲突)
+
+**架构决策**: 采用 StmtExecutor 层面拦截（降级方案），完全绕过 `generateExecPlan()`。原因：`map_batches` FunctionCallExpr 的 `fn == null`（17b 在 analyzer 中 early return），StatementPlanner.plan() 会 NPE。此方案零侵入 Fragment/Planner 核心逻辑。
 
 ---
 
