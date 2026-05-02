@@ -51,6 +51,9 @@ message DaftPlanResponse {
     string error = 2;
   }
   bool is_last = 3;
+  repeated string column_names = 4;  // Set in first response only.
+  repeated string row_values = 5;    // One string per column, per response row (flattened).
+  int32 num_rows = 6;                // Number of rows in this batch.
 }
 
 // Function registration.

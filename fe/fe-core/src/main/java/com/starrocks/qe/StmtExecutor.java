@@ -1007,6 +1007,18 @@ public class StmtExecutor {
                 return;
             }
 
+            // Intercept map_batches queries — route to Daft Coordinator, bypassing planning/execution.
+            if (parsedStmt instanceof QueryStatement
+                    && DaftQueryExecutor.containsMapBatches(parsedStmt)) {
+                if (parsedStmt.isExplain()) {
+                    String explain = DaftQueryExecutor.buildExplainString(parsedStmt);
+                    handleExplainStmt(explain);
+                    return;
+                }
+                DaftQueryExecutor.execute(context, parsedStmt, this);
+                return;
+            }
+
             // Register as a planning query so it is visible in current_queries during optimization.
             // The planning entry is removed before handleQueryStmt/handleDMLStmt re-registers
             // with the real Coordinator, avoiding AlreadyExistsException from putIfAbsent.

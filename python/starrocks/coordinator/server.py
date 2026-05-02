@@ -40,17 +40,35 @@ class DaftCoordinatorServicer(coordinator_pb2_grpc.DaftCoordinatorServicer):
             logger.warning("Failed to initialize Ray: %s — running in local mode", e)
 
     def SubmitDaftPlan(self, request, context):
-        """Execute a Daft plan and stream back Arrow IPC results."""
+        """Execute a Daft plan and stream back results (text format with Arrow IPC)."""
         request_id = request.request_id or "unknown"
         logger.info("[%s] SubmitDaftPlan: sql=%r, ops=%d",
                      request_id, request.source_sql, len(request.operations))
         try:
-            batches = list(self._driver.execute(request))
-            for i, batch_bytes in enumerate(batches):
-                is_last = (i == len(batches) - 1)
+            col_names, rows = self._driver.execute_text(request)
+            # Stream in batches of _TEXT_BATCH_SIZE rows
+            batch_size = 4096
+            total = len(rows)
+            if total == 0:
                 yield coordinator_pb2.DaftPlanResponse(
-                    arrow_ipc_batch=batch_bytes,
-                    is_last=is_last,
+                    column_names=col_names,
+                    row_values=[],
+                    num_rows=0,
+                    is_last=True,
+                )
+                return
+            for start in range(0, total, batch_size):
+                end = min(start + batch_size, total)
+                batch_rows = rows[start:end]
+                # Flatten: each row's values concatenated
+                flat_values = []
+                for row in batch_rows:
+                    flat_values.extend(row)
+                yield coordinator_pb2.DaftPlanResponse(
+                    column_names=col_names if start == 0 else [],
+                    row_values=flat_values,
+                    num_rows=len(batch_rows),
+                    is_last=(end >= total),
                 )
         except Exception as e:
             logger.exception("[%s] SubmitDaftPlan failed", request_id)

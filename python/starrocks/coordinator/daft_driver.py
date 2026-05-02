@@ -29,6 +29,25 @@ class DaftDriver:
         Yields:
             bytes — each chunk is a serialized Arrow IPC RecordBatch.
         """
+        result_table = self._execute_to_arrow(request)
+        yield from self._table_to_ipc_batches(result_table)
+
+    def execute_text(self, request) -> tuple[list[str], list[list[str]]]:
+        """Execute a Daft plan and return text results.
+
+        Returns:
+            (column_names, rows) where each row is a list of string values.
+        """
+        result_table = self._execute_to_arrow(request)
+        col_names = result_table.column_names
+        rows = []
+        for i in range(result_table.num_rows):
+            row = [str(result_table.column(c)[i].as_py()) for c in range(result_table.num_columns)]
+            rows.append(row)
+        return col_names, rows
+
+    def _execute_to_arrow(self, request):
+        """Execute a Daft plan and return the result as a pyarrow Table."""
         import daft
         import pyarrow as pa
 
@@ -46,12 +65,12 @@ class DaftDriver:
         # 3. Apply operations in order.
         daft_df = self._apply_operations(daft_df, request.operations)
 
-        # 4. Collect results and stream as Arrow IPC batches.
+        # 4. Collect results.
         result_table = daft_df.to_arrow()
         logger.info("[%s] Result: %d rows, %d columns",
                      request_id, result_table.num_rows, result_table.num_columns)
 
-        yield from self._table_to_ipc_batches(result_table)
+        return result_table
 
     def _fetch_source_data(self, request) -> "pa.Table":
         """Fetch data from StarRocks via Arrow Flight SQL (ADBC)."""

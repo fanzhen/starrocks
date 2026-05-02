@@ -16,6 +16,10 @@ package com.starrocks.service;
 
 import com.starrocks.common.DaftCoordinatorException;
 import com.starrocks.proto.coordinator.DaftCoordinatorGrpc;
+import com.starrocks.proto.coordinator.DaftOperation;
+import com.starrocks.proto.coordinator.DaftPlanRequest;
+import com.starrocks.proto.coordinator.DaftPlanResponse;
+import com.starrocks.proto.coordinator.MapBatchesOp;
 import com.starrocks.proto.coordinator.StatusRequest;
 import com.starrocks.proto.coordinator.StatusResponse;
 import io.grpc.ManagedChannel;
@@ -24,6 +28,9 @@ import io.grpc.StatusRuntimeException;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 public class DaftCoordinatorClient {
@@ -46,6 +53,81 @@ public class DaftCoordinatorClient {
                     .usePlaintext()
                     .build();
             stub = DaftCoordinatorGrpc.newBlockingStub(channel);
+        }
+    }
+
+    private static final long SUBMIT_DEADLINE_SECONDS = 300;
+
+    /**
+     * Submit a Daft plan to the coordinator and collect text-format results.
+     *
+     * @param requestId unique request identifier
+     * @param sourceSQL the SQL query for the coordinator to pull source data
+     * @param arrowFlightEndpoint Arrow Flight endpoint URL (grpc+tcp://host:port)
+     * @param functionName the registered function name for map_batches
+     * @return DaftQueryResult containing column names and rows
+     */
+    public DaftQueryResult submitDaftPlan(String requestId, String sourceSQL,
+            String arrowFlightEndpoint, String functionName)
+            throws DaftCoordinatorException {
+        ensureChannel();
+
+        DaftPlanRequest request = DaftPlanRequest.newBuilder()
+                .setRequestId(requestId)
+                .setSourceSql(sourceSQL)
+                .setArrowFlightEndpoint(arrowFlightEndpoint)
+                .addOperations(DaftOperation.newBuilder()
+                        .setMapBatches(MapBatchesOp.newBuilder()
+                                .setFunctionName(functionName)
+                                .build())
+                        .build())
+                .build();
+
+        try {
+            Iterator<DaftPlanResponse> responses = stub
+                    .withDeadlineAfter(SUBMIT_DEADLINE_SECONDS, TimeUnit.SECONDS)
+                    .submitDaftPlan(request);
+
+            List<String> columnNames = null;
+            List<List<String>> rows = new ArrayList<>();
+
+            while (responses.hasNext()) {
+                DaftPlanResponse resp = responses.next();
+
+                // Check for error (oneof result case)
+                if (resp.getResultCase() == DaftPlanResponse.ResultCase.ERROR) {
+                    throw new DaftCoordinatorException(
+                            "Daft Coordinator error: " + resp.getError());
+                }
+
+                // Collect column names from first response
+                if (columnNames == null && resp.getColumnNamesCount() > 0) {
+                    columnNames = new ArrayList<>(resp.getColumnNamesList());
+                }
+
+                // Collect rows — row_values is flattened (num_rows * num_columns)
+                int numRows = resp.getNumRows();
+                int numCols = columnNames != null ? columnNames.size() : 0;
+                List<String> flatValues = resp.getRowValuesList();
+
+                for (int r = 0; r < numRows; r++) {
+                    List<String> row = new ArrayList<>(numCols);
+                    for (int c = 0; c < numCols; c++) {
+                        int idx = r * numCols + c;
+                        row.add(idx < flatValues.size() ? flatValues.get(idx) : "");
+                    }
+                    rows.add(row);
+                }
+            }
+
+            if (columnNames == null) {
+                columnNames = new ArrayList<>();
+            }
+            return new DaftQueryResult(columnNames, rows);
+        } catch (StatusRuntimeException e) {
+            LOG.warn("submitDaftPlan failed: {}", e.getStatus(), e);
+            throw new DaftCoordinatorException(
+                    "Daft Coordinator unavailable: " + e.getStatus().getDescription(), e);
         }
     }
 
