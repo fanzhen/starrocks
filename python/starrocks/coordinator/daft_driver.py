@@ -37,12 +37,16 @@ class DaftDriver:
 
         Returns:
             (column_names, rows) where each row is a list of string values.
+            Python None values are serialized as the string "NULL".
         """
         result_table = self._execute_to_arrow(request)
         col_names = result_table.column_names
         rows = []
         for i in range(result_table.num_rows):
-            row = [str(result_table.column(c)[i].as_py()) for c in range(result_table.num_columns)]
+            row = []
+            for c in range(result_table.num_columns):
+                val = result_table.column(c)[i].as_py()
+                row.append("NULL" if val is None else str(val))
             rows.append(row)
         return col_names, rows
 

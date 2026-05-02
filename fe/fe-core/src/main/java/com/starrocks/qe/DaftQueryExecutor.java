@@ -19,6 +19,7 @@ import com.starrocks.common.Config;
 import com.starrocks.common.DaftCoordinatorException;
 import com.starrocks.service.DaftCoordinatorClient;
 import com.starrocks.service.DaftQueryResult;
+import com.starrocks.service.FrontendOptions;
 import com.starrocks.sql.analyzer.AstToSQLBuilder;
 import com.starrocks.sql.ast.QueryRelation;
 import com.starrocks.sql.ast.QueryStatement;
@@ -112,7 +113,7 @@ public class DaftQueryExecutor {
             executor.sendShowResult(resultSet);
         } catch (DaftCoordinatorException e) {
             LOG.warn("DaftQueryExecutor failed", e);
-            throw new RuntimeException("Daft Coordinator execution failed: " + e.getMessage(), e);
+            throw new DaftCoordinatorException("Daft Coordinator execution failed: " + e.getMessage(), e);
         } finally {
             client.close();
         }
@@ -152,13 +153,13 @@ public class DaftQueryExecutor {
                 }
             }
         }
-        throw new RuntimeException("map_batches function not found in select list");
+        throw new IllegalStateException("map_batches function not found in select list");
     }
 
     private static String extractSourceSQL(SelectRelation selectRelation) {
         Relation fromRelation = selectRelation.getRelation();
         if (fromRelation == null) {
-            throw new RuntimeException("map_batches requires a FROM clause");
+            throw new IllegalStateException("map_batches requires a FROM clause");
         }
 
         // If the FROM clause is a subquery, reconstruct it as a SELECT statement
@@ -175,11 +176,11 @@ public class DaftQueryExecutor {
     private static String buildArrowFlightEndpoint() {
         int arrowFlightPort = Config.arrow_flight_port;
         if (arrowFlightPort <= 0) {
-            throw new RuntimeException(
+            throw new IllegalStateException(
                     "Arrow Flight port not configured. Set arrow_flight_port in FE config.");
         }
-        // Use the FE host for Arrow Flight endpoint
-        String host = Config.daft_coordinator_host;
+        // Use the FE's own address so the coordinator can connect back via Arrow Flight SQL
+        String host = FrontendOptions.getLocalHostAddress();
         return "grpc+tcp://" + host + ":" + arrowFlightPort;
     }
 }

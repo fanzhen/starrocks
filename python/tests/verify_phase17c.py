@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 
 import grpc
 import pymysql
@@ -203,6 +204,8 @@ def main():
                 PROPERTIES ('replication_num' = '1')
             """)
             cur.execute("INSERT INTO daft_test_t VALUES (1, 'hello'), (2, 'world')")
+        # Wait for data to be visible (async publish)
+        time.sleep(2)
         ok, detail, rows = execute_expect_success(
             conn,
             "SELECT map_batches('identity') FROM test_daft.daft_test_t",

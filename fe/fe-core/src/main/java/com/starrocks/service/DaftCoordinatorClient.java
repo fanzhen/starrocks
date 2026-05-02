@@ -36,6 +36,7 @@ import java.util.concurrent.TimeUnit;
 public class DaftCoordinatorClient {
     private static final Logger LOG = LogManager.getLogger(DaftCoordinatorClient.class);
     private static final long DEADLINE_SECONDS = 5;
+    private static final long SUBMIT_DEADLINE_SECONDS = 300;
 
     private final String host;
     private final int port;
@@ -55,8 +56,6 @@ public class DaftCoordinatorClient {
             stub = DaftCoordinatorGrpc.newBlockingStub(channel);
         }
     }
-
-    private static final long SUBMIT_DEADLINE_SECONDS = 300;
 
     /**
      * Submit a Daft plan to the coordinator and collect text-format results.
@@ -124,10 +123,16 @@ public class DaftCoordinatorClient {
                 columnNames = new ArrayList<>();
             }
             return new DaftQueryResult(columnNames, rows);
+        } catch (DaftCoordinatorException e) {
+            throw e;
         } catch (StatusRuntimeException e) {
             LOG.warn("submitDaftPlan failed: {}", e.getStatus(), e);
             throw new DaftCoordinatorException(
                     "Daft Coordinator unavailable: " + e.getStatus().getDescription(), e);
+        } catch (Exception e) {
+            LOG.warn("submitDaftPlan unexpected error", e);
+            throw new DaftCoordinatorException(
+                    "Daft Coordinator error: " + e.getMessage(), e);
         }
     }
 
