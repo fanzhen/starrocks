@@ -38,6 +38,7 @@ import com.starrocks.catalog.TableName;
 import com.starrocks.catalog.UserIdentity;
 import com.starrocks.cluster.ClusterNamespace;
 import com.starrocks.common.AnalysisException;
+import com.starrocks.common.Config;
 import com.starrocks.common.DdlException;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.SessionVariable;
@@ -1105,6 +1106,31 @@ public class ExpressionAnalyzer {
                 return visitFunctionCall(node, scope);
             }
  
+            if (fnName.equalsIgnoreCase("map_batches")) {
+                if (!Config.enable_daft_coordinator) {
+                    throw new SemanticException(
+                            "MAP_BATCHES requires enable_daft_coordinator=true", node.getPos());
+                }
+                if (node.getChildren().isEmpty()) {
+                    throw new SemanticException(
+                            "MAP_BATCHES requires at least 1 argument: MAP_BATCHES('function_name', ...)",
+                            node.getPos());
+                }
+                Expr firstArg = node.getChild(0);
+                if (!(firstArg instanceof StringLiteral)) {
+                    throw new SemanticException(
+                            "The first argument of MAP_BATCHES must be a string literal (function name)",
+                            node.getPos());
+                }
+                String daftFuncName = ((StringLiteral) firstArg).getStringValue();
+                if (daftFuncName.isEmpty()) {
+                    throw new SemanticException(
+                            "MAP_BATCHES function name cannot be empty", node.getPos());
+                }
+                node.setType(Type.VARCHAR);
+                return null;
+            }
+
             // Handle backward compatibility parameter conversion
             handleBackwardCompatibleParameterConversion(fnName, node);
 

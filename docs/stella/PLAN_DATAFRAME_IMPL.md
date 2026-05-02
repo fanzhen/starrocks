@@ -935,7 +935,7 @@ DataFrame API 支持多模态类型标注（Image, Tensor, Embedding），与 Da
 >
 > **对应 DESIGN §9.5**: 目标架构：FE 路由 + Daft Coordinator Sidecar
 >
-> **状态**: Phase 17a ✅ 完成 → Phase 17b 待开始
+> **状态**: Phase 17a ✅ 完成 → Phase 17b ✅ 完成 → Phase 17c 待开始
 >
 > **前置依赖**: Stage 1-4 完成（SQL 引擎 + POC 客户端路由已验证混合管道可行）
 >
@@ -1027,19 +1027,21 @@ DataFrame API 支持多模态类型标注（Image, Tensor, Embedding），与 Da
 | 17a.5 | `fe/fe-core/.../common/proc/DaftCoordinatorProcDir.java` | **新建**: `SHOW PROC '/daft_coordinator'` 实现，调用 DaftCoordinatorClient.getStatus() |
 | 17a.6 | `python/tests/verify_phase17a.py` | **新建**: E2E — FE 启动 → `SHOW PROC '/daft_coordinator'` → 状态正确 |
 
-#### Phase 17b: MAP_BATCHES 语法 + AST + 语义分析
+#### Phase 17b: MAP_BATCHES 语法 + 语义分析 ✅
 
 **目标**: FE 能解析含 `MAP_BATCHES(...)` 的 SQL，做语义分析。**不涉及执行路由**——只做解析层，`EXPLAIN` 可见 MAP_BATCHES 节点。
+
+**方案**: 无需修改 grammar。`map_batches(...)` 通过已有 `simpleFunctionCall` 规则自然解析为 `FunctionCallExpr`。在 `ExpressionAnalyzer.visitFunctionCall` 中拦截做语义验证（同 `date_part` 模式）。
 
 **验收用例**:
 
 | # | 用例 | PASS 条件 |
 |---|------|-----------|
-| 1 | `SELECT MAP_BATCHES('func', *) FROM t` | FE 解析成功，AST 包含 MapBatchesExpr |
-| 2 | `EXPLAIN SELECT MAP_BATCHES('func', *) FROM t` | EXPLAIN 输出可见 MAP_BATCHES 节点 |
-| 3 | `MAP_BATCHES` 带错误参数 → 分析阶段报错 | `AnalysisException` 明确提示参数格式 |
-| 4 | 纯 SQL 查询（无 MAP_BATCHES）→ 行为不变 | 回归测试 PASS |
-| 5 | `MAP_BATCHES` 嵌套在子查询中 | 解析正确 |
+| 1 | `EXPLAIN SELECT map_batches('func') FROM (SELECT 1 AS a) t` (enabled) | EXPLAIN 成功，输出含 map_batches |
+| 2 | `EXPLAIN SELECT map_batches('func') ...` (disabled) | SemanticException: enable_daft_coordinator |
+| 3 | `map_batches()` 无参数 | 错误: at least 1 argument |
+| 4 | `map_batches(123)` 非字符串首参 | 错误: string literal |
+| 5 | `SELECT 1+1` 回归 | 正常返回 |
 
 **前置依赖**: Phase 17a 完成
 
@@ -1047,11 +1049,8 @@ DataFrame API 支持多模态类型标注（Image, Tensor, Embedding），与 Da
 
 | 步骤 | 文件 | 改动 |
 |------|------|------|
-| 17b.1 | `fe/fe-grammar/StarRocks.g4` | 扩展语法: `MAP_BATCHES(string_literal, column_list)` 函数表达式 |
-| 17b.2 | `fe/fe-parser/.../ast/MapBatchesExpr.java` | **新建**: MapBatches AST 节点（functionName: String, columns: List<Expr>） |
-| 17b.3 | `fe/fe-parser/.../AstBuilder.java` | visitMapBatches → 构建 MapBatchesExpr |
-| 17b.4 | `fe/fe-core/.../sql/analyzer/` | MapBatches 语义分析: 验证函数名非空、输入列存在、enable_daft_coordinator=true |
-| 17b.5 | `python/tests/verify_phase17b.py` | **新建**: E2E — `EXPLAIN SELECT MAP_BATCHES(...)` → 验证解析成功 |
+| 17b.1 | `fe/fe-core/.../sql/analyzer/ExpressionAnalyzer.java` | 在 `visitFunctionCall` 中拦截 `map_batches`：验证 config gate、参数数量、首参类型，设 `Type.VARCHAR` 后 return |
+| 17b.2 | `python/tests/verify_phase17b.py` | **新建**: E2E — 5 个测试用例 |
 
 #### Phase 17c: 执行路由 + Coordinator 对接 + Python 适配
 
