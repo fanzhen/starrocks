@@ -16,13 +16,13 @@ package com.starrocks.service;
 
 import com.starrocks.common.DaftCoordinatorException;
 import com.starrocks.coordinator.proto.DaftCoordinatorGrpc;
+import com.starrocks.coordinator.proto.DaftFunctionInfo;
 import com.starrocks.coordinator.proto.DaftOperation;
 import com.starrocks.coordinator.proto.DaftPlanRequest;
 import com.starrocks.coordinator.proto.DaftPlanResponse;
-import com.starrocks.coordinator.proto.MapBatchesOp;
-import com.starrocks.coordinator.proto.DaftFunctionInfo;
 import com.starrocks.coordinator.proto.ListFunctionsRequest;
 import com.starrocks.coordinator.proto.ListFunctionsResponse;
+import com.starrocks.coordinator.proto.MapBatchesOp;
 import com.starrocks.coordinator.proto.RegisterFunctionRequest;
 import com.starrocks.coordinator.proto.RegisterFunctionResponse;
 import com.starrocks.coordinator.proto.StatusRequest;
