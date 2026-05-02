@@ -15,7 +15,7 @@
 syntax = "proto3";
 package starrocks.coordinator;
 
-option java_package = "com.starrocks.proto.coordinator";
+option java_package = "com.starrocks.coordinator.proto";
 option java_outer_classname = "CoordinatorProto";
 option java_multiple_files = true;
 

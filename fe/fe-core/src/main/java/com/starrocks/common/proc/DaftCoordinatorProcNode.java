@@ -18,7 +18,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import com.starrocks.common.Config;
 import com.starrocks.common.DaftCoordinatorException;
-import com.starrocks.proto.coordinator.StatusResponse;
+import com.starrocks.coordinator.proto.StatusResponse;
 import com.starrocks.service.DaftCoordinatorClient;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;

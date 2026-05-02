@@ -15,13 +15,13 @@
 package com.starrocks.service;
 
 import com.starrocks.common.DaftCoordinatorException;
-import com.starrocks.proto.coordinator.DaftCoordinatorGrpc;
-import com.starrocks.proto.coordinator.DaftOperation;
-import com.starrocks.proto.coordinator.DaftPlanRequest;
-import com.starrocks.proto.coordinator.DaftPlanResponse;
-import com.starrocks.proto.coordinator.MapBatchesOp;
-import com.starrocks.proto.coordinator.StatusRequest;
-import com.starrocks.proto.coordinator.StatusResponse;
+import com.starrocks.coordinator.proto.DaftCoordinatorGrpc;
+import com.starrocks.coordinator.proto.DaftOperation;
+import com.starrocks.coordinator.proto.DaftPlanRequest;
+import com.starrocks.coordinator.proto.DaftPlanResponse;
+import com.starrocks.coordinator.proto.MapBatchesOp;
+import com.starrocks.coordinator.proto.StatusRequest;
+import com.starrocks.coordinator.proto.StatusResponse;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.StatusRuntimeException;
