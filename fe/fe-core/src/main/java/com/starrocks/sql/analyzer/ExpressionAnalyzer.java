@@ -1127,7 +1127,7 @@ public class ExpressionAnalyzer {
                     throw new SemanticException(
                             "MAP_BATCHES function name cannot be empty", node.getPos());
                 }
-                node.setType(Type.VARCHAR);
+                node.setType(VarcharType.VARCHAR);
                 return null;
             }
 
