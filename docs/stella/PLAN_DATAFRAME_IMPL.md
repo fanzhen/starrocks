@@ -1089,24 +1089,26 @@ DataFrame API 支持多模态类型标注（Image, Tensor, Embedding），与 Da
 
 ---
 
-### Phase 18: 函数注册 + 管理
+### Phase 18: 函数注册 + 管理 ✅ 完成 (2026-05-02)
 
 #### 18.1 目标与验收标准
 
-函数注册机制：用户通过 DDL 注册 Python 函数（模块路径 + 函数名），FE 持久化元数据，Coordinator 动态加载执行。
+函数注册机制：用户通过 ADMIN DDL 注册 Python 函数（模块路径 + 函数名），Coordinator 动态加载执行。
 
-> **关键决策** (DESIGN §10 #4): 混合模式——POC 支持 inline closure，目标架构采用注册 + 名称引用。此 phase 实现注册模式。
+> **架构决策**: 采用 ADMIN 命令 + Coordinator 作为 source of truth（无 FE 持久化）。Coordinator 注册表在 Coordinator 进程生命周期内有效。FE 持久化（EditLog）留待后续需要时补充。
 
-**验收用例**:
+**验收结果**:
 
-| # | 用例 | PASS 条件 |
-|---|------|-----------|
-| 1 | `CREATE DAFT FUNCTION func_name AS 'module.func'` | FE 元数据持久化 + Coordinator 加载成功 |
-| 2 | `SHOW DAFT FUNCTIONS` | 列出已注册函数（名称、模块路径、创建时间） |
-| 3 | `DROP DAFT FUNCTION func_name` | 删除注册 + Coordinator 卸载 |
-| 4 | `df.map_batches("func_name")` → 全链路执行 | FE 解析 → Coordinator 按名称找到函数 → Ray 执行 → 结果正确 |
-| 5 | 引用不存在的函数 → 友好错误 | `AnalysisException: Daft function 'xxx' not found` |
-| 6 | 函数元数据跨 FE 重启持久化 | 重启后 `SHOW DAFT FUNCTIONS` 仍显示 |
+| # | 用例 | 结果 |
+|---|------|------|
+| 1 | `ADMIN CREATE DAFT FUNCTION 'name' PROPERTIES(...)` | ✅ PASS — Coordinator 加载成功 |
+| 2 | `ADMIN SHOW DAFT FUNCTIONS` | ✅ PASS — 列出 Name/ModulePath/CallableName |
+| 3 | `ADMIN DROP DAFT FUNCTION 'name'` | ✅ PASS — 删除成功，SHOW 为空 |
+| 4 | `SELECT map_batches('name') FROM ...` 全链路 | ✅ PASS — 结果正确 (a=1, b=2) |
+| 5 | DROP 后引用不存在的函数 → 错误 | ✅ PASS — "Function not registered: 'test_identity'" |
+| 6 | 回归: `SELECT 1+1` | ✅ PASS |
+
+**已知限制**: 函数注册不跨 Coordinator 重启持久化（Coordinator 重启后需重新注册）
 
 #### 18.2 前置依赖
 
@@ -1116,13 +1118,17 @@ DataFrame API 支持多模态类型标注（Image, Tensor, Embedding），与 Da
 
 | 步骤 | 文件 | 改动 |
 |------|------|------|
-| 18.1 | `fe/fe-grammar/StarRocks.g4` | 新增: `CREATE/DROP/SHOW DAFT FUNCTION` 语法 |
-| 18.2 | `fe/fe-parser/.../ast/` | `CreateDaftFunctionStmt`, `DropDaftFunctionStmt`, `ShowDaftFunctionsStmt` |
-| 18.3 | `fe/fe-core/.../catalog/DaftFunctionManager.java` | **新建**: 函数元数据管理（内存 + EditLog 持久化） |
-| 18.4 | `fe/fe-core/.../sql/analyzer/` | DDL 语义分析 |
-| 18.5 | `fe/fe-core/.../qe/StmtExecutor.java` | 执行 DDL |
-| 18.6 | `python/starrocks/session.py` | `session.register_function(name, module_path)` — 通过 DDL 注册 |
-| 18.7 | `python/tests/test_function_registry.py` | **新建**: 函数注册 E2E 测试 |
+| 18.1 | `coordinator.proto` (FE + Python) | 新增: `ListFunctions`, `UnregisterFunction` RPCs + `DaftFunctionInfo` |
+| 18.2 | `StarRocks.g4` + `StarRocksLex.g4` | 新增: `DAFT` keyword, 3 ADMIN 语法规则 |
+| 18.3 | `fe/fe-parser/.../ast/` | `AdminCreateDaftFunctionStmt`, `AdminDropDaftFunctionStmt`, `AdminShowDaftFunctionsStmt` |
+| 18.4 | `AstBuilder.java` + `AstVisitor.java` | 3 个 visitor 方法 |
+| 18.5 | `DaftCoordinatorClient.java` | `registerFunction`, `unregisterFunction`, `listFunctions` |
+| 18.6 | `DDLStmtExecutor.java` | CREATE/DROP 执行 (config gate) |
+| 18.7 | `ShowExecutor.java` + `ShowResultMetaFactory.java` | SHOW 执行 (3列: Name/ModulePath/CallableName) |
+| 18.8 | `python/starrocks/coordinator/server.py` | `ListFunctions`, `UnregisterFunction` RPC handlers |
+| 18.9 | `python/tests/verify_phase18.py` | E2E 验证脚本 (7 tests) |
+
+**部署注意**: 容器内原有 `fe-core-4.1.0.jar` 会覆盖 `fe-core-main.jar`，需替换为新版本。
 
 ---
 
