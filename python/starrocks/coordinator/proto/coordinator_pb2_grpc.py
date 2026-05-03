@@ -2,7 +2,7 @@
 """Client and server classes corresponding to protobuf-defined services."""
 import grpc
 
-from starrocks.coordinator.proto import coordinator_pb2 as coordinator__pb2
+import coordinator_pb2 as coordinator__pb2
 
 
 class DaftCoordinatorStub(object):

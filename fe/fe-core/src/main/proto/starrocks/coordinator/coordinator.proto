@@ -40,6 +40,8 @@ message DaftPlanRequest {
   string source_sql = 3;
   // Ordered sequence of Daft operations to apply.
   repeated DaftOperation operations = 4;
+  // If true, Daft reads directly from BE via daft.read_sql().
+  bool use_direct_read = 5;
 }
 
 message DaftOperation {
@@ -48,7 +50,15 @@ message DaftOperation {
     FilterOp filter = 2;
     ProjectionOp projection = 3;
     LimitOp limit = 4;
+    WriteBackOp write_back = 5;
   }
+}
+
+message WriteBackOp {
+  string database = 1;
+  string table_name = 2;
+  string fe_host = 3;      // Stream Load target host.
+  int32 fe_http_port = 4;   // Stream Load target port (default 8030).
 }
 
 message MapBatchesOp {

@@ -82,6 +82,7 @@ public class DaftCoordinatorClient {
                 .setRequestId(requestId)
                 .setSourceSql(sourceSQL)
                 .setArrowFlightEndpoint(arrowFlightEndpoint)
+                .setUseDirectRead(true)
                 .addOperations(DaftOperation.newBuilder()
                         .setMapBatches(MapBatchesOp.newBuilder()
                                 .setFunctionName(functionName)
