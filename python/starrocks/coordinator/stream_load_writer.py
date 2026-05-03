@@ -47,6 +47,7 @@ class StreamLoadWriter:
             "Expect": "100-continue",
             "format": "csv",
             "column_separator": ",",
+            "enclose": '"',
             "label": label,
         }
         auth = (self._user, self._password)
