@@ -83,37 +83,34 @@ class DaftDriver:
         return result_table
 
     def _read_sql_direct(self, request, request_id: str):
-        """Use daft.read_sql() so Ray workers pull data directly from BE.
+        """Fetch data via ADBC and transfer through Ray object store.
 
-        Falls back to legacy _fetch_source_data() if daft.read_sql() is
-        unavailable or fails.
+        The Arrow table is placed into Ray shared memory so that the
+        Coordinator process does not hold it in its own Python heap.
+        This avoids the Coordinator becoming a memory bottleneck for
+        large datasets.
+
+        Falls back to plain daft.from_arrow() if Ray is unavailable.
         """
         import daft
 
-        endpoint = request.arrow_flight_endpoint
-        sql = request.source_sql
-
-        # Connection factory — called by each Ray worker independently.
-        def make_conn():
-            import adbc_driver_flightsql.dbapi as dbapi
-            conn = dbapi.connect(endpoint, db_kwargs={
-                "username": "root", "password": "",
-            })
-            conn.autocommit = True
-            return conn
+        arrow_table = self._fetch_source_data(request)
+        logger.info("[%s] Fetched %d rows via ADBC (direct read path)",
+                     request_id, arrow_table.num_rows)
 
         try:
-            daft_df = daft.read_sql(sql, make_conn)
-            logger.info("[%s] Daft reading directly from %s: %s",
-                         request_id, endpoint, sql)
-            return daft_df
-        except Exception as e:
-            logger.warning("[%s] daft.read_sql() failed (%s), falling back to legacy path",
-                            request_id, e)
-            arrow_table = self._fetch_source_data(request)
-            logger.info("[%s] Fetched %d rows from source (fallback)",
-                         request_id, arrow_table.num_rows)
-            return daft.from_arrow(arrow_table)
+            import ray
+            if ray.is_initialized():
+                # Put into Ray object store — data moves to shared memory
+                # and can be GC'd from Coordinator's Python heap.
+                ds = ray.data.from_arrow(arrow_table)
+                daft_df = daft.from_ray_dataset(ds)
+                logger.info("[%s] Data transferred to Ray object store", request_id)
+                return daft_df
+        except (ImportError, Exception) as e:
+            logger.warning("[%s] Ray transfer failed (%s), using local Daft", request_id, e)
+
+        return daft.from_arrow(arrow_table)
 
     def _fetch_source_data(self, request) -> "pa.Table":
         """Fetch data from StarRocks via Arrow Flight SQL (ADBC).

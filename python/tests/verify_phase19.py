@@ -34,7 +34,7 @@ from starrocks.coordinator.proto import coordinator_pb2, coordinator_pb2_grpc
 SR_HOST = os.environ.get("SR_HOST", "127.0.0.1")
 SR_PORT = int(os.environ.get("SR_PORT", "9030"))
 SR_HTTP_PORT = int(os.environ.get("SR_HTTP_PORT", "8030"))
-ARROW_FLIGHT_PORT = int(os.environ.get("ARROW_FLIGHT_PORT", "8040"))
+ARROW_FLIGHT_PORT = int(os.environ.get("ARROW_FLIGHT_PORT", "9408"))
 COORDINATOR_HOST = os.environ.get("COORDINATOR_HOST", SR_HOST)
 COORDINATOR_PORT = int(os.environ.get("COORDINATOR_PORT", "50051"))
 
@@ -133,7 +133,7 @@ def submit_daft_plan(request, timeout=30):
 
 def arrow_flight_endpoint():
     """Build the Arrow Flight SQL endpoint URL."""
-    return f"grpc://{SR_HOST}:{ARROW_FLIGHT_PORT}"
+    return f"grpc+tcp://{SR_HOST}:{ARROW_FLIGHT_PORT}"
 
 
 def main():
