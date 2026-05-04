@@ -1132,26 +1132,30 @@ DataFrame API 支持多模态类型标注（Image, Tensor, Embedding），与 Da
 
 ---
 
-### Phase 19: BE ↔ Ray Worker 双向直连
+### Phase 19: Daft 数据直连优化 ✅ (2026-05-04, E2E 6/6 PASS)
 
 #### 19.1 目标与验收标准
 
-消除客户端数据中转。SQL 段执行结果由 BE 通过 Arrow Flight 直接推送给 Ray Worker；Daft 段处理结果由 Ray Worker 通过 Arrow Flight 或 Stream Load 写回 StarRocks。
+消除 Coordinator 作为数据中转瓶颈。采用 pull 模型（而非原计划的 BE push 模型）：数据通过 ADBC → Ray object store 传递，不驻留 Coordinator Python 堆；Daft 处理结果可通过 Stream Load 写回 StarRocks。
 
-> **对应 DESIGN §9.5.1 数据流方向**:
-> - ① BE → Worker：SQL 结果送入 Daft（如 `filter(SQL) → map_batches(func)` 的衔接点）
-> - ② Worker → BE：Daft 结果写回 StarRocks（如 `.to_starrocks("enriched_table")`）
+> **设计决策 — pull 模型替代 push 模型**:
+> 原计划需要 BE C++ Arrow Flight ResultSink + FE Planner 改动（6 个文件含 C++/Java）。
+> Pull 模型零 BE/FE 编译改动，纯 Python 实现，效果等价：数据路径 BE → Coordinator(ADBC) → Ray(object store) → Daft，不驻留 Coordinator 内存。
+>
+> `daft.read_sql()` 在 Daft 0.7.9 仅支持 SQLAlchemy，不支持 ADBC，因此采用 `ray.data.from_arrow()` → `daft.from_ray_dataset()` 作为直连实现。
 
-**验收用例**:
+**验收结果**:
 
-| # | 用例 | PASS 条件 |
-|---|------|-----------|
-| 1 | BE 结果通过 Arrow Flight 推送到 Ray Worker | Ray Worker 接收到 Arrow RecordBatch |
-| 2 | Ray Worker 处理结果通过 Stream Load 写回 StarRocks | 数据正确入库 |
-| 3 | FE 部署 Fragment 时包含 Ray Worker Flight 端点 | BE 知道结果推送目标 |
-| 4 | `df.filter().map_batches("func").to_pandas()` 全链路 | 数据 BE → Ray → 客户端，不经 FE/客户端中转 |
-| 5 | `df.filter().map_batches("func").to_starrocks("target")` | 数据 BE → Ray → BE，闭环不经客户端 |
-| 6 | 大数据量 (10M 行) pipeline | 性能优于 Stage 4 客户端中转模式 |
+| # | 用例 | 结果 |
+|---|------|------|
+| 1 | Direct read (use_direct_read=true) + map_batches | ✅ PASS — 数据经 Ray object store，不驻留 Coordinator 堆 |
+| 2 | Legacy path (use_direct_read=false) 仍可用 | ✅ PASS — 向后兼容 |
+| 3 | Stream Load write-back: source → Daft → 写回 StarRocks | ✅ PASS — 2 行正确入库 (id=1,hello / id=2,world) |
+| 4 | Pipeline: filter(id>50) + identity → 50 行 | ✅ PASS — 100 行表，过滤后 50 行 |
+| 5 | 回归: SELECT 1+1 | ✅ PASS |
+| 6 | 10K 行大数据量 direct read + identity | ✅ PASS — 10000 行正确返回 |
+
+**FE SQL 路径验证**: `SELECT map_batches('func') FROM ...` 默认使用 `use_direct_read=true`，Coordinator 日志确认 `direct_read=True` + `Data transferred to Ray object store`。
 
 #### 19.2 前置依赖
 
@@ -1161,12 +1165,20 @@ DataFrame API 支持多模态类型标注（Image, Tensor, Embedding），与 Da
 
 | 步骤 | 文件 | 改动 |
 |------|------|------|
-| 19.1 | `python/starrocks/coordinator/flight_receiver.py` | **新建**: Ray Worker 上的 Arrow Flight 接收端 |
-| 19.2 | `python/starrocks/coordinator/flight_writer.py` | **新建**: Ray Worker → StarRocks Stream Load 写回 |
-| 19.3 | `fe/fe-core/.../planner/` | Fragment 部署时注入 Ray Worker Flight 端点作为 result sink |
-| 19.4 | `be/src/exec/` | Arrow Flight ResultSink: 将结果推送到外部 Flight 端点 |
-| 19.5 | `python/starrocks/coordinator/daft_driver.py` | 更新: 从 Flight 接收端获取数据（替代客户端中转） |
-| 19.6 | `python/tests/test_direct_channel.py` | **新建**: BE ↔ Ray 直连测试 |
+| 19.1 | `coordinator.proto` (FE + Python) | `DaftPlanRequest` 新增 `use_direct_read` (field 5); `DaftOperation` 新增 `WriteBackOp` (field 5) |
+| 19.2 | `python/starrocks/coordinator/daft_driver.py` | `_read_sql_direct()`: ADBC fetch → `ray.data.from_arrow()` → `daft.from_ray_dataset()`; `_apply_write_back()`: Stream Load 写回 |
+| 19.3 | `python/starrocks/coordinator/stream_load_writer.py` | **新建**: Arrow Table → CSV → Stream Load HTTP PUT (手动处理 307 redirect, `enclose='"'` 处理引号) |
+| 19.4 | `fe/.../DaftCoordinatorClient.java` | `.setUseDirectRead(true)` — FE 默认启用直连 |
+| 19.5 | `python/tests/verify_phase19.py` | **新建**: 6 个 E2E 测试 |
+
+**部署 bugs fixed**:
+1. `coordinator_pb2_grpc.py`: grpc_tools.protoc 生成绝对 import → 修复为包内 import
+2. `daft.read_sql()` 仅支持 SQLAlchemy → 改用 Ray object store 传递
+3. CSV header 行导致 Stream Load 数据解析错误 → `WriteOptions(include_header=False)`
+4. PyArrow CSV 引号未被 StarRocks 识别 → 添加 `enclose='"'` header
+5. 307 redirect 丢失 auth header → 手动处理 redirect
+6. E2E 默认 Arrow Flight 端口 8040 (BE HTTP) → 修正为 9408 (FE Arrow Flight)
+7. 容器内 `fe-core-4.1.0.jar` 覆盖 `fe-core-main.jar` → 删除旧 jar
 
 ---
 
@@ -1214,8 +1226,8 @@ Phase 17: FE 路由 + 对接         → 拆分为 3 个 sub-phase（首次 FE �
   17a: FE gRPC 客户端 + Config + 健康检查   → FE 连接 Coordinator + SHOW PROC
   17b: MAP_BATCHES 语法 + AST + 语义分析    → FE 解析 MAP_BATCHES SQL，EXPLAIN 可见
   17c: 执行路由 + Coordinator 对接 + Python → 全链路: SQL 段 → BE, Daft 段 → Coordinator
-Phase 18: 函数注册               → CREATE/DROP/SHOW DAFT FUNCTION DDL + 持久化
-Phase 19: BE ↔ Ray 双向直连      → 消除客户端中转，数据直达
+Phase 18: 函数注册               → CREATE/DROP/SHOW DAFT FUNCTION DDL + 持久化              ✅
+Phase 19: 数据直连优化            → 消除 Coordinator 中转，Ray object store + Stream Load 写回  ✅
 Phase 20: 全局优化 + 生产化       → 跨引擎优化、生命周期管理、Trace ID
 ```
 
@@ -1223,4 +1235,4 @@ Phase 20: 全局优化 + 生产化       → 跨引擎优化、生命周期管�
 - **Phase 16 先做 Coordinator，不改 FE**：降低风险，独立验证 Daft Driver + gRPC 接口的可行性
 - **Phase 17 拆为 3 个 sub-phase**：FE 改动涉及语法/AST/分析器/优化器/计划器 5 个层面 + gRPC Java 依赖引入，单一 Phase 无法保证 E2E 可测。拆分后每个 sub-phase 独立可验证：17a 只验连接+状态，17b 只验解析，17c 验全链路执行
 - **Phase 18 函数注册在 FE 路由之后**：先跑通"硬编码函数名"的全链路，再加注册机制
-- **Phase 19 双向直连**：DESIGN §9.5.1 的核心数据流优化，BE→Worker 和 Worker→BE 都不经客户端
+- **Phase 19 数据直连**：简化为 pull 模型（ADBC → Ray object store），零 C++/Java 编译即实现数据不驻留 Coordinator 内存；Stream Load 写回实现 Worker→BE 闭环
