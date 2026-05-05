@@ -14,12 +14,14 @@
 
 package com.starrocks.service;
 
+import com.starrocks.common.Config;
 import com.starrocks.common.DaftCoordinatorException;
 import com.starrocks.coordinator.proto.DaftCoordinatorGrpc;
 import com.starrocks.coordinator.proto.DaftFunctionInfo;
 import com.starrocks.coordinator.proto.DaftOperation;
 import com.starrocks.coordinator.proto.DaftPlanRequest;
 import com.starrocks.coordinator.proto.DaftPlanResponse;
+import com.starrocks.coordinator.proto.ExecutionStats;
 import com.starrocks.coordinator.proto.ListFunctionsRequest;
 import com.starrocks.coordinator.proto.ListFunctionsResponse;
 import com.starrocks.coordinator.proto.MapBatchesOp;
@@ -43,7 +45,6 @@ import java.util.concurrent.TimeUnit;
 public class DaftCoordinatorClient {
     private static final Logger LOG = LogManager.getLogger(DaftCoordinatorClient.class);
     private static final long DEADLINE_SECONDS = 5;
-    private static final long SUBMIT_DEADLINE_SECONDS = 300;
 
     private final String host;
     private final int port;
@@ -70,49 +71,53 @@ public class DaftCoordinatorClient {
      * @param requestId unique request identifier
      * @param sourceSQL the SQL query for the coordinator to pull source data
      * @param arrowFlightEndpoint Arrow Flight endpoint URL (grpc+tcp://host:port)
-     * @param functionName the registered function name for map_batches
-     * @return DaftQueryResult containing column names and rows
+     * @param functionNames list of registered function names for map_batches (in execution order)
+     * @return DaftQueryResult containing column names, rows, and execution stats
      */
     public DaftQueryResult submitDaftPlan(String requestId, String sourceSQL,
-            String arrowFlightEndpoint, String functionName)
+            String arrowFlightEndpoint, List<String> functionNames)
             throws DaftCoordinatorException {
         ensureChannel();
 
-        DaftPlanRequest request = DaftPlanRequest.newBuilder()
+        DaftPlanRequest.Builder requestBuilder = DaftPlanRequest.newBuilder()
                 .setRequestId(requestId)
                 .setSourceSql(sourceSQL)
                 .setArrowFlightEndpoint(arrowFlightEndpoint)
-                .setUseDirectRead(true)
-                .addOperations(DaftOperation.newBuilder()
-                        .setMapBatches(MapBatchesOp.newBuilder()
-                                .setFunctionName(functionName)
-                                .build())
-                        .build())
-                .build();
+                .setUseDirectRead(true);
+
+        for (String funcName : functionNames) {
+            requestBuilder.addOperations(DaftOperation.newBuilder()
+                    .setMapBatches(MapBatchesOp.newBuilder()
+                            .setFunctionName(funcName)
+                            .build())
+                    .build());
+        }
+
+        DaftPlanRequest request = requestBuilder.build();
+        long timeoutSeconds = Config.daft_coordinator_timeout_seconds;
+        long maxResultRows = Config.daft_coordinator_max_result_rows;
 
         try {
             Iterator<DaftPlanResponse> responses = stub
-                    .withDeadlineAfter(SUBMIT_DEADLINE_SECONDS, TimeUnit.SECONDS)
+                    .withDeadlineAfter(timeoutSeconds, TimeUnit.SECONDS)
                     .submitDaftPlan(request);
 
             List<String> columnNames = null;
             List<List<String>> rows = new ArrayList<>();
+            ExecutionStats lastStats = null;
 
             while (responses.hasNext()) {
                 DaftPlanResponse resp = responses.next();
 
-                // Check for error (oneof result case)
                 if (resp.getResultCase() == DaftPlanResponse.ResultCase.ERROR) {
                     throw new DaftCoordinatorException(
                             "Daft Coordinator error: " + resp.getError());
                 }
 
-                // Collect column names from first response
                 if (columnNames == null && resp.getColumnNamesCount() > 0) {
                     columnNames = new ArrayList<>(resp.getColumnNamesList());
                 }
 
-                // Collect rows — row_values is flattened (num_rows * num_columns)
                 int numRows = resp.getNumRows();
                 int numCols = columnNames != null ? columnNames.size() : 0;
                 List<String> flatValues = resp.getRowValuesList();
@@ -125,12 +130,23 @@ public class DaftCoordinatorClient {
                     }
                     rows.add(row);
                 }
+
+                // Check max result rows limit
+                if (maxResultRows > 0 && rows.size() > maxResultRows) {
+                    throw new DaftCoordinatorException(
+                            "Daft Coordinator result exceeds maximum rows limit: "
+                                    + rows.size() + " > " + maxResultRows);
+                }
+
+                if (resp.hasStats()) {
+                    lastStats = resp.getStats();
+                }
             }
 
             if (columnNames == null) {
                 columnNames = new ArrayList<>();
             }
-            return new DaftQueryResult(columnNames, rows);
+            return new DaftQueryResult(columnNames, rows, lastStats);
         } catch (DaftCoordinatorException e) {
             throw e;
         } catch (StatusRuntimeException e) {

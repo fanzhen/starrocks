@@ -50,6 +50,7 @@ def main(argv: list[str] | None = None) -> None:
 
     def _handle_signal(signum, frame):
         logger.info("Received signal %d, shutting down...", signum)
+        servicer.shutdown()
         server.stop(grace=5)
         sys.exit(0)
 

@@ -4469,4 +4469,22 @@ public class Config extends ConfigBase {
      */
     @ConfField(mutable = true)
     public static int daft_coordinator_port = 50051;
+
+    /**
+     * Daft Coordinator submit timeout in seconds.
+     */
+    @ConfField(mutable = true)
+    public static int daft_coordinator_timeout_seconds = 300;
+
+    /**
+     * Maximum number of retries for Daft Coordinator requests.
+     */
+    @ConfField(mutable = true)
+    public static int daft_coordinator_max_retries = 1;
+
+    /**
+     * Maximum number of result rows from Daft Coordinator. 0 = unlimited.
+     */
+    @ConfField(mutable = true)
+    public static long daft_coordinator_max_result_rows = 1000000;
 }

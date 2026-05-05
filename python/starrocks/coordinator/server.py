@@ -45,7 +45,15 @@ class DaftCoordinatorServicer(coordinator_pb2_grpc.DaftCoordinatorServicer):
         logger.info("[%s] SubmitDaftPlan: sql=%r, ops=%d",
                      request_id, request.source_sql, len(request.operations))
         try:
-            col_names, rows = self._driver.execute_text(request)
+            col_names, rows, stats = self._driver.execute_text(request)
+            stats_pb = coordinator_pb2.ExecutionStats(
+                data_fetch_ms=stats.get("data_fetch_ms", 0),
+                daft_execute_ms=stats.get("daft_execute_ms", 0),
+                total_ms=stats.get("total_ms", 0),
+                input_rows=stats.get("input_rows", 0),
+                output_rows=stats.get("output_rows", 0),
+                input_bytes=stats.get("input_bytes", 0),
+            )
             # Stream in batches of _TEXT_BATCH_SIZE rows
             batch_size = 4096
             total = len(rows)
@@ -55,6 +63,7 @@ class DaftCoordinatorServicer(coordinator_pb2_grpc.DaftCoordinatorServicer):
                     row_values=[],
                     num_rows=0,
                     is_last=True,
+                    stats=stats_pb,
                 )
                 return
             for start in range(0, total, batch_size):
@@ -64,12 +73,16 @@ class DaftCoordinatorServicer(coordinator_pb2_grpc.DaftCoordinatorServicer):
                 flat_values = []
                 for row in batch_rows:
                     flat_values.extend(row)
-                yield coordinator_pb2.DaftPlanResponse(
+                is_last = (end >= total)
+                resp = coordinator_pb2.DaftPlanResponse(
                     column_names=col_names if start == 0 else [],
                     row_values=flat_values,
                     num_rows=len(batch_rows),
-                    is_last=(end >= total),
+                    is_last=is_last,
                 )
+                if is_last:
+                    resp.stats.CopyFrom(stats_pb)
+                yield resp
         except Exception as e:
             logger.exception("[%s] SubmitDaftPlan failed", request_id)
             yield coordinator_pb2.DaftPlanResponse(
@@ -138,6 +151,11 @@ class DaftCoordinatorServicer(coordinator_pb2_grpc.DaftCoordinatorServicer):
             registered_functions=len(self._registry),
             ray_resources=ray_resources,
         )
+
+    def shutdown(self) -> None:
+        """Perform cleanup before server shutdown."""
+        logger.info("DaftCoordinatorServicer shutting down: %d registered functions",
+                     len(self._registry))
 
     @property
     def registry(self) -> FunctionRegistry:

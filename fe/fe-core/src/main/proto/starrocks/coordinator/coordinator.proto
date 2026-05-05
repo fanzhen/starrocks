@@ -86,6 +86,16 @@ message DaftPlanResponse {
   repeated string column_names = 4;  // Set in first response only.
   repeated string row_values = 5;    // One string per column, per response row (flattened).
   int32 num_rows = 6;                // Number of rows in this batch.
+  ExecutionStats stats = 7;          // Set in last response only.
+}
+
+message ExecutionStats {
+  int64 data_fetch_ms = 1;
+  int64 daft_execute_ms = 2;
+  int64 total_ms = 3;
+  int64 input_rows = 4;
+  int64 output_rows = 5;
+  int64 input_bytes = 6;
 }
 
 // Function registration.

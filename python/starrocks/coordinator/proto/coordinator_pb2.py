@@ -13,7 +13,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x11\x63oordinator.proto\x12\x15starrocks.coordinator\"\xab\x01\n\x0f\x44\x61\x66tPlanRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x1d\n\x15\x61rrow_flight_endpoint\x18\x02 \x01(\t\x12\x12\n\nsource_sql\x18\x03 \x01(\t\x12\x38\n\noperations\x18\x04 \x03(\x0b\x32$.starrocks.coordinator.DaftOperation\x12\x17\n\x0fuse_direct_read\x18\x05 \x01(\x08\"\xaa\x02\n\rDaftOperation\x12:\n\x0bmap_batches\x18\x01 \x01(\x0b\x32#.starrocks.coordinator.MapBatchesOpH\x00\x12\x31\n\x06\x66ilter\x18\x02 \x01(\x0b\x32\x1f.starrocks.coordinator.FilterOpH\x00\x12\x39\n\nprojection\x18\x03 \x01(\x0b\x32#.starrocks.coordinator.ProjectionOpH\x00\x12/\n\x05limit\x18\x04 \x01(\x0b\x32\x1e.starrocks.coordinator.LimitOpH\x00\x12\x38\n\nwrite_back\x18\x05 \x01(\x0b\x32\".starrocks.coordinator.WriteBackOpH\x00\x42\x04\n\x02op\"Z\n\x0bWriteBackOp\x12\x10\n\x08\x64\x61tabase\x18\x01 \x01(\t\x12\x12\n\ntable_name\x18\x02 \x01(\t\x12\x0f\n\x07\x66\x65_host\x18\x03 \x01(\t\x12\x14\n\x0c\x66\x65_http_port\x18\x04 \x01(\x05\"%\n\x0cMapBatchesOp\x12\x15\n\rfunction_name\x18\x01 \x01(\t\"\x1d\n\x08\x46ilterOp\x12\x11\n\texpr_json\x18\x01 \x01(\t\"\x1f\n\x0cProjectionOp\x12\x0f\n\x07\x63olumns\x18\x01 \x03(\t\"\x18\n\x07LimitOp\x12\r\n\x05\x63ount\x18\x01 \x01(\x03\"\x95\x01\n\x10\x44\x61\x66tPlanResponse\x12\x19\n\x0f\x61rrow_ipc_batch\x18\x01 \x01(\x0cH\x00\x12\x0f\n\x05\x65rror\x18\x02 \x01(\tH\x00\x12\x0f\n\x07is_last\x18\x03 \x01(\x08\x12\x14\n\x0c\x63olumn_names\x18\x04 \x03(\t\x12\x12\n\nrow_values\x18\x05 \x03(\t\x12\x10\n\x08num_rows\x18\x06 \x01(\x05\x42\x08\n\x06result\"\\\n\x17RegisterFunctionRequest\x12\x15\n\rfunction_name\x18\x01 \x01(\t\x12\x13\n\x0bmodule_path\x18\x02 \x01(\t\x12\x15\n\rcallable_name\x18\x03 \x01(\t\"<\n\x18RegisterFunctionResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\"\x16\n\x14ListFunctionsRequest\"S\n\x15ListFunctionsResponse\x12:\n\tfunctions\x18\x01 \x03(\x0b\x32\'.starrocks.coordinator.DaftFunctionInfo\"L\n\x10\x44\x61\x66tFunctionInfo\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x13\n\x0bmodule_path\x18\x02 \x01(\t\x12\x15\n\rcallable_name\x18\x03 \x01(\t\"2\n\x19UnregisterFunctionRequest\x12\x15\n\rfunction_name\x18\x01 \x01(\t\">\n\x1aUnregisterFunctionResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\"\x0f\n\rStatusRequest\"\xc3\x01\n\x0eStatusResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x1c\n\x14registered_functions\x18\x02 \x01(\x05\x12N\n\rray_resources\x18\x03 \x03(\x0b\x32\x37.starrocks.coordinator.StatusResponse.RayResourcesEntry\x1a\x33\n\x11RayResourcesEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\x32\xac\x04\n\x0f\x44\x61\x66tCoordinator\x12\x63\n\x0eSubmitDaftPlan\x12&.starrocks.coordinator.DaftPlanRequest\x1a\'.starrocks.coordinator.DaftPlanResponse0\x01\x12s\n\x10RegisterFunction\x12..starrocks.coordinator.RegisterFunctionRequest\x1a/.starrocks.coordinator.RegisterFunctionResponse\x12X\n\tGetStatus\x12$.starrocks.coordinator.StatusRequest\x1a%.starrocks.coordinator.StatusResponse\x12j\n\rListFunctions\x12+.starrocks.coordinator.ListFunctionsRequest\x1a,.starrocks.coordinator.ListFunctionsResponse\x12y\n\x12UnregisterFunction\x12\x30.starrocks.coordinator.UnregisterFunctionRequest\x1a\x31.starrocks.coordinator.UnregisterFunctionResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x11\x63oordinator.proto\x12\x15starrocks.coordinator\"\xab\x01\n\x0f\x44\x61\x66tPlanRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x1d\n\x15\x61rrow_flight_endpoint\x18\x02 \x01(\t\x12\x12\n\nsource_sql\x18\x03 \x01(\t\x12\x38\n\noperations\x18\x04 \x03(\x0b\x32$.starrocks.coordinator.DaftOperation\x12\x17\n\x0fuse_direct_read\x18\x05 \x01(\x08\"\xaa\x02\n\rDaftOperation\x12:\n\x0bmap_batches\x18\x01 \x01(\x0b\x32#.starrocks.coordinator.MapBatchesOpH\x00\x12\x31\n\x06\x66ilter\x18\x02 \x01(\x0b\x32\x1f.starrocks.coordinator.FilterOpH\x00\x12\x39\n\nprojection\x18\x03 \x01(\x0b\x32#.starrocks.coordinator.ProjectionOpH\x00\x12/\n\x05limit\x18\x04 \x01(\x0b\x32\x1e.starrocks.coordinator.LimitOpH\x00\x12\x38\n\nwrite_back\x18\x05 \x01(\x0b\x32\".starrocks.coordinator.WriteBackOpH\x00\x42\x04\n\x02op\"Z\n\x0bWriteBackOp\x12\x10\n\x08\x64\x61tabase\x18\x01 \x01(\t\x12\x12\n\ntable_name\x18\x02 \x01(\t\x12\x0f\n\x07\x66\x65_host\x18\x03 \x01(\t\x12\x14\n\x0c\x66\x65_http_port\x18\x04 \x01(\x05\"%\n\x0cMapBatchesOp\x12\x15\n\rfunction_name\x18\x01 \x01(\t\"\x1d\n\x08\x46ilterOp\x12\x11\n\texpr_json\x18\x01 \x01(\t\"\x1f\n\x0cProjectionOp\x12\x0f\n\x07\x63olumns\x18\x01 \x03(\t\"\x18\n\x07LimitOp\x12\r\n\x05\x63ount\x18\x01 \x01(\x03\"\xcb\x01\n\x10\x44\x61\x66tPlanResponse\x12\x19\n\x0f\x61rrow_ipc_batch\x18\x01 \x01(\x0cH\x00\x12\x0f\n\x05\x65rror\x18\x02 \x01(\tH\x00\x12\x0f\n\x07is_last\x18\x03 \x01(\x08\x12\x14\n\x0c\x63olumn_names\x18\x04 \x03(\t\x12\x12\n\nrow_values\x18\x05 \x03(\t\x12\x10\n\x08num_rows\x18\x06 \x01(\x05\x12\x34\n\x05stats\x18\x07 \x01(\x0b\x32%.starrocks.coordinator.ExecutionStatsB\x08\n\x06result\"\x90\x01\n\x0e\x45xecutionStats\x12\x15\n\rdata_fetch_ms\x18\x01 \x01(\x03\x12\x17\n\x0f\x64\x61\x66t_execute_ms\x18\x02 \x01(\x03\x12\x10\n\x08total_ms\x18\x03 \x01(\x03\x12\x12\n\ninput_rows\x18\x04 \x01(\x03\x12\x13\n\x0boutput_rows\x18\x05 \x01(\x03\x12\x13\n\x0binput_bytes\x18\x06 \x01(\x03\"\\\n\x17RegisterFunctionRequest\x12\x15\n\rfunction_name\x18\x01 \x01(\t\x12\x13\n\x0bmodule_path\x18\x02 \x01(\t\x12\x15\n\rcallable_name\x18\x03 \x01(\t\"<\n\x18RegisterFunctionResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\"\x16\n\x14ListFunctionsRequest\"S\n\x15ListFunctionsResponse\x12:\n\tfunctions\x18\x01 \x03(\x0b\x32\'.starrocks.coordinator.DaftFunctionInfo\"L\n\x10\x44\x61\x66tFunctionInfo\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x13\n\x0bmodule_path\x18\x02 \x01(\t\x12\x15\n\rcallable_name\x18\x03 \x01(\t\"2\n\x19UnregisterFunctionRequest\x12\x15\n\rfunction_name\x18\x01 \x01(\t\">\n\x1aUnregisterFunctionResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\"\x0f\n\rStatusRequest\"\xc3\x01\n\x0eStatusResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x1c\n\x14registered_functions\x18\x02 \x01(\x05\x12N\n\rray_resources\x18\x03 \x03(\x0b\x32\x37.starrocks.coordinator.StatusResponse.RayResourcesEntry\x1a\x33\n\x11RayResourcesEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\x32\xac\x04\n\x0f\x44\x61\x66tCoordinator\x12\x63\n\x0eSubmitDaftPlan\x12&.starrocks.coordinator.DaftPlanRequest\x1a\'.starrocks.coordinator.DaftPlanResponse0\x01\x12s\n\x10RegisterFunction\x12..starrocks.coordinator.RegisterFunctionRequest\x1a/.starrocks.coordinator.RegisterFunctionResponse\x12X\n\tGetStatus\x12$.starrocks.coordinator.StatusRequest\x1a%.starrocks.coordinator.StatusResponse\x12j\n\rListFunctions\x12+.starrocks.coordinator.ListFunctionsRequest\x1a,.starrocks.coordinator.ListFunctionsResponse\x12y\n\x12UnregisterFunction\x12\x30.starrocks.coordinator.UnregisterFunctionRequest\x1a\x31.starrocks.coordinator.UnregisterFunctionResponseb\x06proto3')
 
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, globals())
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'coordinator_pb2', globals())
@@ -37,27 +37,29 @@ if _descriptor._USE_C_DESCRIPTORS == False:
   _LIMITOP._serialized_start=714
   _LIMITOP._serialized_end=738
   _DAFTPLANRESPONSE._serialized_start=741
-  _DAFTPLANRESPONSE._serialized_end=890
-  _REGISTERFUNCTIONREQUEST._serialized_start=892
-  _REGISTERFUNCTIONREQUEST._serialized_end=984
-  _REGISTERFUNCTIONRESPONSE._serialized_start=986
-  _REGISTERFUNCTIONRESPONSE._serialized_end=1046
-  _LISTFUNCTIONSREQUEST._serialized_start=1048
-  _LISTFUNCTIONSREQUEST._serialized_end=1070
-  _LISTFUNCTIONSRESPONSE._serialized_start=1072
-  _LISTFUNCTIONSRESPONSE._serialized_end=1155
-  _DAFTFUNCTIONINFO._serialized_start=1157
-  _DAFTFUNCTIONINFO._serialized_end=1233
-  _UNREGISTERFUNCTIONREQUEST._serialized_start=1235
-  _UNREGISTERFUNCTIONREQUEST._serialized_end=1285
-  _UNREGISTERFUNCTIONRESPONSE._serialized_start=1287
-  _UNREGISTERFUNCTIONRESPONSE._serialized_end=1349
-  _STATUSREQUEST._serialized_start=1351
-  _STATUSREQUEST._serialized_end=1366
-  _STATUSRESPONSE._serialized_start=1369
-  _STATUSRESPONSE._serialized_end=1564
-  _STATUSRESPONSE_RAYRESOURCESENTRY._serialized_start=1513
-  _STATUSRESPONSE_RAYRESOURCESENTRY._serialized_end=1564
-  _DAFTCOORDINATOR._serialized_start=1567
-  _DAFTCOORDINATOR._serialized_end=2123
+  _DAFTPLANRESPONSE._serialized_end=944
+  _EXECUTIONSTATS._serialized_start=947
+  _EXECUTIONSTATS._serialized_end=1091
+  _REGISTERFUNCTIONREQUEST._serialized_start=1093
+  _REGISTERFUNCTIONREQUEST._serialized_end=1185
+  _REGISTERFUNCTIONRESPONSE._serialized_start=1187
+  _REGISTERFUNCTIONRESPONSE._serialized_end=1247
+  _LISTFUNCTIONSREQUEST._serialized_start=1249
+  _LISTFUNCTIONSREQUEST._serialized_end=1271
+  _LISTFUNCTIONSRESPONSE._serialized_start=1273
+  _LISTFUNCTIONSRESPONSE._serialized_end=1356
+  _DAFTFUNCTIONINFO._serialized_start=1358
+  _DAFTFUNCTIONINFO._serialized_end=1434
+  _UNREGISTERFUNCTIONREQUEST._serialized_start=1436
+  _UNREGISTERFUNCTIONREQUEST._serialized_end=1486
+  _UNREGISTERFUNCTIONRESPONSE._serialized_start=1488
+  _UNREGISTERFUNCTIONRESPONSE._serialized_end=1550
+  _STATUSREQUEST._serialized_start=1552
+  _STATUSREQUEST._serialized_end=1567
+  _STATUSRESPONSE._serialized_start=1570
+  _STATUSRESPONSE._serialized_end=1765
+  _STATUSRESPONSE_RAYRESOURCESENTRY._serialized_start=1714
+  _STATUSRESPONSE_RAYRESOURCESENTRY._serialized_end=1765
+  _DAFTCOORDINATOR._serialized_start=1768
+  _DAFTCOORDINATOR._serialized_end=2324
 # @@protoc_insertion_point(module_scope)

@@ -14,6 +14,8 @@
 
 package com.starrocks.service;
 
+import com.starrocks.coordinator.proto.ExecutionStats;
+
 import java.util.List;
 
 /**
@@ -22,10 +24,16 @@ import java.util.List;
 public class DaftQueryResult {
     private final List<String> columnNames;
     private final List<List<String>> rows;
+    private final ExecutionStats stats;
 
     public DaftQueryResult(List<String> columnNames, List<List<String>> rows) {
+        this(columnNames, rows, null);
+    }
+
+    public DaftQueryResult(List<String> columnNames, List<List<String>> rows, ExecutionStats stats) {
         this.columnNames = columnNames;
         this.rows = rows;
+        this.stats = stats;
     }
 
     public List<String> getColumnNames() {
@@ -34,5 +42,9 @@ public class DaftQueryResult {
 
     public List<List<String>> getRows() {
         return rows;
+    }
+
+    public ExecutionStats getStats() {
+        return stats;
     }
 }
