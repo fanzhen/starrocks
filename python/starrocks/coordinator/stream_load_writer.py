@@ -94,6 +94,9 @@ class StreamLoadWriter:
                 auth=auth,
             )
 
+        if resp.status_code not in (200, 307):
+            raise RuntimeError(
+                f"Stream Load HTTP error {resp.status_code}: {resp.text[:500]}")
         result = resp.json()
         status = result.get("Status")
         if status not in ("Success", "Publish Timeout"):

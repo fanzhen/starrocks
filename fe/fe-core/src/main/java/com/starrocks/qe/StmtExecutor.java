@@ -1008,7 +1008,8 @@ public class StmtExecutor {
             }
 
             // Intercept map_batches queries — route to Daft Coordinator, bypassing planning/execution.
-            if (parsedStmt instanceof QueryStatement
+            if (Config.enable_daft_coordinator
+                    && parsedStmt instanceof QueryStatement
                     && DaftQueryExecutor.containsMapBatches(parsedStmt)) {
                 if (parsedStmt.isExplain()) {
                     String explain = DaftQueryExecutor.buildExplainString(parsedStmt);

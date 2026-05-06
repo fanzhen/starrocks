@@ -43,12 +43,12 @@ class DaftDriver:
         """
         result_table, stats = self._execute_to_arrow(request)
         col_names = result_table.column_names
+        # Convert columns to Python lists in bulk (much faster than per-element access).
+        py_columns = [col.to_pylist() for col in result_table.columns]
         rows = []
         for i in range(result_table.num_rows):
-            row = []
-            for c in range(result_table.num_columns):
-                val = result_table.column(c)[i].as_py()
-                row.append("NULL" if val is None else str(val))
+            row = ["NULL" if py_columns[c][i] is None else str(py_columns[c][i])
+                   for c in range(result_table.num_columns)]
             rows.append(row)
         stats["output_rows"] = result_table.num_rows
         return col_names, rows, stats
@@ -121,7 +121,7 @@ class DaftDriver:
                 daft_df = daft.from_ray_dataset(ds)
                 logger.info("[%s] Data transferred to Ray object store", request_id)
                 return daft_df
-        except (ImportError, Exception) as e:
+        except Exception as e:
             logger.warning("[%s] Ray transfer failed (%s), using local Daft", request_id, e)
 
         return daft.from_arrow(arrow_table)
@@ -141,6 +141,7 @@ class DaftDriver:
         if not sql:
             raise ValueError("source_sql is required")
 
+        # TODO: credentials should be passed via DaftPlanRequest instead of hardcoded
         conn = dbapi.connect(endpoint, db_kwargs={"username": "root", "password": ""})
         try:
             conn.autocommit = True
