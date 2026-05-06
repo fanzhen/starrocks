@@ -15,7 +15,7 @@ Prerequisites:
   - Arrow Flight SQL enabled
 
 Usage:
-  SR_HOST=47.239.57.232 python3.11 tests/verify_phase20.py
+  SR_HOST=8.218.233.134 python3.11 tests/verify_phase20.py
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ from starrocks.coordinator.proto import coordinator_pb2, coordinator_pb2_grpc
 SR_HOST = os.environ.get("SR_HOST", "127.0.0.1")
 SR_PORT = int(os.environ.get("SR_PORT", "9030"))
 SR_HTTP_PORT = int(os.environ.get("SR_HTTP_PORT", "8030"))
-ARROW_FLIGHT_PORT = int(os.environ.get("ARROW_FLIGHT_PORT", "9408"))
+ARROW_FLIGHT_PORT = int(os.environ.get("ARROW_FLIGHT_PORT", "9409"))
 COORDINATOR_HOST = os.environ.get("COORDINATOR_HOST", SR_HOST)
 COORDINATOR_PORT = int(os.environ.get("COORDINATOR_PORT", "50051"))
 

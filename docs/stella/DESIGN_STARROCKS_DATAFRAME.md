@@ -683,3 +683,10 @@ FE 路由采用 `StmtExecutor` 级别的 AST 拦截（Phase 17c 降级方案）�
 - 函数注册不跨 Coordinator 重启持久化（Coordinator 重启后需重新注册）
 - gRPC 通道配置了 Keep-Alive（60s interval, 10s timeout），防止云环境防火墙静默断连
 
+### 11.6 Arrow Flight SQL 部署
+
+- FE 和 BE 的 `arrow_flight_port` 不能相同（`--network=host` 模式下会端口冲突），推荐 FE=9409, BE=9408
+- FE 需要 JVM flag `--add-opens=java.base/java.nio=ALL-UNNAMED`，否则 Arrow 18 的 MemoryUtil 初始化失败
+- Coordinator 通过 ADBC 连接 **FE 的** Arrow Flight SQL 端口（FE 代理到 BE），不直连 BE（BE 无 auth 处理）
+- `DaftQueryExecutor.buildArrowFlightEndpoint()` 使用 `Config.arrow_flight_port`（FE 的端口）构建 endpoint
+

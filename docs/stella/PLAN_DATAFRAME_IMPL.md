@@ -98,6 +98,9 @@ $SSH "ls /root/starrocks/docs/stella/"  # 应看到 DESIGN 和 PLAN 文档
 | `FE saved address not match` | 容器使用 bridge 网络，hostname 解析到 10.88.x.x | 必须 `--network=host` |
 | BE heartbeat 端口 | allin1 镜像已内置 BE，无需手动 ADD BACKEND | 验证 `SHOW BACKENDS` Alive=true 即可 |
 | 容器重启后数据丢失 | allin1 镜像数据在容器内 | 生产环境需挂载 volume，测试环境可接受 |
+| FE Arrow Flight 端口冲突 | FE 和 BE 的 `arrow_flight_port` 默认都是 -1，但不能设为相同值 | FE 设 9409，BE 设 9408 |
+| FE Arrow Flight MemoryUtil 错误 | Arrow 18 需要 JVM `--add-opens` | FE `JAVA_OPTS` 加 `--add-opens=java.base/java.nio=ALL-UNNAMED` |
+| FE 需要 Stage 5 自定义 jar | allin1 镜像内置的 FE 不含 Daft Coordinator 代码 | 用 dev-env-ubuntu 编译后替换 jar，见 §0.4.5 |
 
 #### 0.4.3 本地连接方式
 
@@ -147,6 +150,80 @@ $SSH "docker exec sr-dataframe mysql -h127.0.0.1 -P9030 -uroot -e 'SELECT 1'"
 
 # mysql 客户端（从本地直连，需要服务器安全组开放 9030 端口）
 mysql -h$SERVER -P9030 -uroot -e 'SELECT 1'
+```
+
+#### 0.4.5 Stage 5 部署（FE 编译 + Coordinator + Arrow Flight）
+
+Stage 5 (Phase 16-20) 引入了 FE Java 代码改动（Daft Coordinator 客户端、map_batches 语法等），需要在 dev-env 容器中编译 FE 并替换 allin1 容器中的 jar。
+
+```bash
+# === Step 1: 启动 dev-env 编译容器 ===
+$SSH "docker pull starrocks/dev-env-ubuntu:latest"
+$SSH "docker run -d --name sr-build --network=host \
+  -v /root/starrocks:/build \
+  starrocks/dev-env-ubuntu:latest sleep infinity"
+
+# === Step 2: 编译 FE（约 3-5 分钟）===
+$SSH "docker exec sr-build bash -c '
+  cd /build/fe && mvn package -DskipTests \
+    -Dstarrocks.thrift=/var/local/thirdparty/installed/bin/thrift \
+    -Dstarrocks.home=/build -pl fe-core -am
+'"
+
+# === Step 3: 替换 FE jar（必须替换所有模块 jar）===
+$SSH "docker exec sr-dataframe bash -c '
+  cd /data/deploy/starrocks/fe/lib
+  # 备份原始 jar
+  mkdir -p /tmp/fe-jars-backup && cp *.jar /tmp/fe-jars-backup/
+  # 从编译产物覆盖（必须所有模块一起替换）
+  for mod in fe-core fe-parser fe-grammar fe-spi fe-type fe-utils fe-testing; do
+    jar_file=\$(find /root/starrocks/fe/\${mod}/target -name \"\${mod}-*.jar\" -not -name \"*-sources*\" -not -name \"*-tests*\" | head -1)
+    [ -n \"\$jar_file\" ] && cp \"\$jar_file\" . && echo \"Replaced: \$(basename \$jar_file)\"
+  done
+'"
+
+# === Step 4: 配置 FE（Arrow Flight + Daft Coordinator）===
+$SSH "docker exec sr-dataframe bash -c '
+  cat >> /data/deploy/starrocks/fe/conf/fe.conf <<EOF
+
+# Arrow Flight SQL (必须与 BE 的 9408 不同)
+arrow_flight_port = 9409
+
+# Daft Coordinator
+enable_daft_coordinator = true
+daft_coordinator_host = 127.0.0.1
+daft_coordinator_port = 50051
+EOF
+
+  # JVM flag for Arrow Flight SQL (Arrow 18 需要)
+  sed -i \"s|JAVA_OPTS=\\\"-Dlog4j2|JAVA_OPTS=\\\"--add-opens=java.base/java.nio=ALL-UNNAMED -Dlog4j2|\" /data/deploy/starrocks/fe/conf/fe.conf
+'"
+
+# === Step 5: 配置 BE Arrow Flight ===
+$SSH "docker exec sr-dataframe bash -c '
+  grep -q arrow_flight_port /data/deploy/starrocks/be/conf/be.conf || \
+    echo \"arrow_flight_port = 9408\" >> /data/deploy/starrocks/be/conf/be.conf
+'"
+
+# === Step 6: 重启 FE + BE ===
+$SSH "docker exec sr-dataframe bash -c '
+  cd /data/deploy/starrocks/fe && ./bin/stop_fe.sh && sleep 3 && ./bin/start_fe.sh --daemon
+  cd /data/deploy/starrocks/be && ./bin/stop_be.sh && sleep 3 && ./bin/start_be.sh --daemon
+'"
+sleep 30
+
+# === Step 7: 安装 Python 依赖 + 启动 Coordinator ===
+$SSH "docker exec sr-dataframe bash -c '
+  pip3 install --break-system-packages pymysql grpcio grpcio-tools protobuf \
+    pyarrow adbc-driver-flightsql daft ray 2>/dev/null
+  cd /root/starrocks && nohup python3 -m starrocks.coordinator.cli \
+    --port 50051 --log-level INFO > /tmp/coordinator.log 2>&1 &
+'"
+sleep 5
+
+# === Step 8: 验证 ===
+$SSH "docker exec sr-dataframe mysql -h127.0.0.1 -P9030 -uroot -e \"SHOW PROC '/daft_coordinator'\""
+# 应显示 Status=SERVING
 ```
 
 ### 0.5 本地 Python 开发环境
