@@ -44,13 +44,13 @@ git checkout -b fanzhen/main-stella-dataframe origin/main
 
 本项目是纯 Python 客户端，不需要编译 FE/BE，但 E2E 测试需要一个运行中的 StarRocks 实例。使用 **StarRocks allin1 Docker 镜像**快速部署。
 
-**当前服务器**: `47.239.57.232`
+**当前服务器**: `8.218.233.134`
 
 #### 0.4.1 服务器从零搭建（换服务器时参照此节）
 
 ```bash
 # === 变量 ===
-SERVER=47.239.57.232
+SERVER=8.218.233.134
 SSH="ssh -i ~/.ssh/my_ecs.pem root@$SERVER"
 
 # === Step 1: 安装 Docker（Alibaba Cloud Linux 3 / CentOS 8+）===
@@ -112,14 +112,14 @@ $SSH "ls /root/starrocks/docs/stella/"  # 应看到 DESIGN 和 PLAN 文档
 
 开放后可直接连接：
 ```bash
-mysql -h47.239.57.232 -P9030 -uroot -e 'SELECT 1'
+mysql -h8.218.233.134 -P9030 -uroot -e 'SELECT 1'
 ```
 
 **方式 B：SSH Tunnel（安全组未开放时使用）**
 
 ```bash
 # 建立 SSH 隧道：本地 9030 → 远程 127.0.0.1:9030
-ssh -i ~/.ssh/my_ecs.pem -L 9030:127.0.0.1:9030 -N -f root@47.239.57.232
+ssh -i ~/.ssh/my_ecs.pem -L 9030:127.0.0.1:9030 -N -f root@8.218.233.134
 
 # 通过隧道连接
 mysql -h127.0.0.1 -P9030 -uroot -e 'SELECT 1'
@@ -160,7 +160,7 @@ pip install pymysql pandas pyarrow pytest
 # 验证连接远程 StarRocks（需要安全组开放 9030 端口）
 python3 -c "
 import pymysql
-conn = pymysql.connect(host='47.239.57.232', port=9030, user='root')
+conn = pymysql.connect(host='8.218.233.134', port=9030, user='root')
 cur = conn.cursor()
 cur.execute('SELECT 1')
 print('StarRocks connected:', cur.fetchone())
@@ -224,7 +224,7 @@ python/
 E2E 测试连接远程 StarRocks。测试配置通过环境变量：
 
 ```bash
-export SR_HOST=47.239.57.232
+export SR_HOST=8.218.233.134
 export SR_PORT=9030
 export SR_USER=root
 export SR_PASSWORD=
@@ -400,7 +400,7 @@ def check(name, condition):
     if condition: print(f"PASS: {name}"); PASS += 1
     else: print(f"FAIL: {name}"); FAIL += 1
 
-session = Session(host=os.getenv("SR_HOST","47.239.57.232"), port=int(os.getenv("SR_PORT","9030")),
+session = Session(host=os.getenv("SR_HOST","8.218.233.134"), port=int(os.getenv("SR_PORT","9030")),
                   user="root", database="test_dataframe")
 
 # Setup
