@@ -7,6 +7,7 @@ import logging
 import uuid
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.csv as pcsv
 import requests
 
@@ -23,6 +24,24 @@ class StreamLoadWriter:
         self._user = user
         self._password = password
 
+    @staticmethod
+    def _replace_nulls_with_marker(table: pa.Table) -> pa.Table:
+        """Replace null values with \\N marker for StarRocks Stream Load.
+
+        StarRocks CSV format uses \\N to denote NULL. PyArrow CSV writer
+        outputs null as empty string, which StarRocks interprets as an
+        empty string (not NULL). This method casts all columns to string
+        and replaces nulls with \\N.
+        """
+        new_columns = []
+        for col in table.columns:
+            str_col = col.cast(pa.string())
+            filled = pc.if_else(pc.is_null(col), pa.scalar("\\N"), str_col)
+            new_columns.append(filled)
+        return pa.table(
+            {name: col for name, col in zip(table.column_names, new_columns)}
+        )
+
     def write_table(self, table: pa.Table, database: str, table_name: str,
                     label: str | None = None) -> dict:
         """Write a pyarrow Table to StarRocks via Stream Load.
@@ -34,6 +53,11 @@ class StreamLoadWriter:
 
         # Convert Arrow Table to CSV bytes (no header — Stream Load treats
         # every row as data, so a header row would cause type errors).
+        # Replace null values with \N before CSV conversion, because:
+        # - PyArrow CSV writer outputs null as empty string (,,)
+        # - StarRocks Stream Load treats empty string as empty string, not NULL
+        # - StarRocks uses \N to denote NULL in CSV
+        table = self._replace_nulls_with_marker(table)
         buf = io.BytesIO()
         pcsv.write_csv(table, buf,
                        write_options=pcsv.WriteOptions(include_header=False))

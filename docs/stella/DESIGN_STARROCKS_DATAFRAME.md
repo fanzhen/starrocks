@@ -641,3 +641,45 @@ Daft Driver (Coordinator)
 | 3 | **FE ↔ Coordinator 协议** | gRPC + Protobuf | gRPC 支持双向流（适合 Daft 执行状态上报）、proto 定义强类型。Thrift 在 StarRocks 内部用于 FE↔BE，但 Coordinator 是新组件，不受历史约束。传递**逻辑计划**（非物理计划），Coordinator 内部做物理计划优化 |
 | 4 | **函数注册范式** | 混合模式 | POC 阶段支持 inline closure（`map_batches(lambda df: ...)`）；目标架构采用注册 + 名称引用（`session.register_udf("clip_embed", func)` → `map_batches("clip_embed")`）。Inline closure 无法序列化到远端 Coordinator，注册模式是生产化的必经之路 |
 
+---
+
+## 11. 已知限制与约束 (Phase 20 完成后)
+
+### 11.1 两条执行路径并存
+
+当前存在两条独立的 `map_batches` 执行路径：
+
+| 路径 | 入口 | 执行方式 | 适用场景 |
+|------|------|---------|---------|
+| **客户端路由 (POC)** | `DataFrame.map_batches(python_callable)` → `PipelineExecutor` | 客户端本地切分 SQL/Daft 段，需要本地 Ray/Daft | 开发调试、本地实验 |
+| **FE 路由 (目标架构)** | SQL `SELECT map_batches('registered_func') FROM ...` | FE 拦截 → gRPC → Coordinator sidecar | 生产部署、只需 pymysql |
+
+Python `DataFrame.map_batches()` 目前仅接受 Python callable，走客户端路由。未来可扩展为同时接受字符串函数名，自动生成 `SELECT map_batches('func_name')` SQL 走 FE 路由。
+
+### 11.2 结果集大小限制
+
+通过 MySQL 协议拉取 `map_batches` 结果受限于 FE 内存（`ShowResultSet` 全量驻留 FE 堆）。兜底配置 `daft_coordinator_max_result_rows`（默认 100 万行）限制返回行数。
+
+- **大结果集场景应使用 `write_back` 模式**：`map_batches` + `write_back` 操作将结果通过 Stream Load 写回 StarRocks，不经过 FE 内存
+- Coordinator 端 `daft_df.to_arrow()` 也是全量物化（Daft 不提供流式 collect API），同样受限于 Coordinator 进程内存
+
+### 11.3 AST 拦截方式的 SQL 兼容性
+
+FE 路由采用 `StmtExecutor` 级别的 AST 拦截（Phase 17c 降级方案），在 `map_batches` 查询被送入 Planner 之前截获并转发给 Coordinator。这意味着：
+
+- `map_batches` 无法与 CTE (`WITH`)、Window 函数、复杂外层 SQL（如多层嵌套非 map_batches 子查询）融合
+- `map_batches` 必须出现在最外层 SELECT 的 select list 中
+- 嵌套 `map_batches`（如 `SELECT map_batches('f2') FROM (SELECT map_batches('f1') FROM t)`）通过 `DaftQueryExecutor.extractDaftPlan()` 递归展平，支持任意深度嵌套
+
+### 11.4 Stream Load 写回
+
+- 写回数据全量物化为 CSV 后通过 HTTP PUT 一次性发送，大数据量时内存翻倍（Arrow + CSV）
+- 未来可改为 Generator 流式上传（`requests.put(data=generator)`）
+- NULL 值通过 `\N` 标记正确传递（PyArrow 默认输出空字符串，已通过 `_replace_nulls_with_marker` 转换）
+
+### 11.5 Coordinator 生命周期
+
+- `start_daft_coordinator.sh` / `stop_daft_coordinator.sh` 是独立脚本，未集成到 FE 的 `start_fe.sh` / `stop_fe.sh`
+- 函数注册不跨 Coordinator 重启持久化（Coordinator 重启后需重新注册）
+- gRPC 通道配置了 Keep-Alive（60s interval, 10s timeout），防止云环境防火墙静默断连
+

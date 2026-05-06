@@ -1228,8 +1228,30 @@ Phase 17: FE 路由 + 对接         → 拆分为 3 个 sub-phase（首次 FE �
   17c: 执行路由 + Coordinator 对接 + Python → 全链路: SQL 段 → BE, Daft 段 → Coordinator
 Phase 18: 函数注册               → CREATE/DROP/SHOW DAFT FUNCTION DDL + 持久化              ✅
 Phase 19: 数据直连优化            → 消除 Coordinator 中转，Ray object store + Stream Load 写回  ✅
-Phase 20: 全局优化 + 生产化       → 跨引擎优化、生命周期管理、Trace ID
+Phase 20: 全局优化 + 生产化       → 跨引擎优化、生命周期管理、Trace ID                       ✅ (partial)
 ```
+
+**Phase 20 实施范围说明**：
+
+Phase 20 的原始目标 6 项验收用例中，实际实施了以下子集：
+
+| # | 原始用例 | 状态 | 说明 |
+|---|---------|------|------|
+| 1 | 跨段谓词下推到 SQL | 未实施 | 需要 Optimizer 层面跨引擎 rule，当前 AST 拦截架构不支持 |
+| 2 | 跨段列裁剪 | 未实施 | 同上 |
+| 3 | 连续 map_batches 合并 | ✅ 已实施 | `DaftQueryExecutor.extractDaftPlan()` 递归展平嵌套 map_batches |
+| 4 | Coordinator 随 FE 启停 | ✅ 部分 | 独立脚本 `start/stop_daft_coordinator.sh`，未集成到 FE 启停 |
+| 5 | Trace ID 穿透 | ✅ 已实施 | `context.getQueryId()` 作为 requestId，Coordinator 日志可关联 |
+| 6 | 混合 pipeline 10M 行 E2E | 未实施 | 需要大规模测试环境 |
+
+额外实施的生产化改进：
+- ExecutionStats（proto + Python + FE 全链路）
+- 生产配置（timeout / max_retries / max_result_rows）
+- gRPC Keep-Alive（防止云环境断连）
+- Stream Load NULL 值正确处理（`\N` 标记）
+- gRPC 重试逻辑（仅重试传输层错误）
+
+已知限制详见 DESIGN 文档 §11。
 
 关键设计选择：
 - **Phase 16 先做 Coordinator，不改 FE**：降低风险，独立验证 Daft Driver + gRPC 接口的可行性

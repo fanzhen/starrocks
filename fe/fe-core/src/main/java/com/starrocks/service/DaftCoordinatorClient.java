@@ -60,6 +60,9 @@ public class DaftCoordinatorClient {
         if (channel == null || channel.isShutdown()) {
             channel = ManagedChannelBuilder.forAddress(host, port)
                     .usePlaintext()
+                    .keepAliveTime(60, TimeUnit.SECONDS)
+                    .keepAliveTimeout(10, TimeUnit.SECONDS)
+                    .keepAliveWithoutCalls(true)
                     .build();
             stub = DaftCoordinatorGrpc.newBlockingStub(channel);
         }
