@@ -16,9 +16,11 @@ logger = logging.getLogger(__name__)
 class DaftCoordinatorServicer(coordinator_pb2_grpc.DaftCoordinatorServicer):
     """Implements the DaftCoordinator gRPC service."""
 
-    def __init__(self, ray_address: str | None = None) -> None:
+    def __init__(self, ray_address: str | None = None,
+                 functions_dir: str | None = None) -> None:
         self._ray_address = ray_address
-        self._registry = FunctionRegistry()
+        self._registry = FunctionRegistry(persist_dir=functions_dir)
+        self._registry.load_persisted()
         self._driver = DaftDriver(self._registry)
         self._init_ray(ray_address)
 

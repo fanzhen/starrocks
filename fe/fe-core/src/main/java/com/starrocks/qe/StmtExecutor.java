@@ -2578,7 +2578,7 @@ public class StmtExecutor {
         sendShowResult(resultSet);
     }
 
-    private void sendMetaData(ShowResultSetMetaData metaData) throws IOException {
+    void sendMetaData(ShowResultSetMetaData metaData) throws IOException {
         // sends how many columns
         serializer.reset();
         serializer.writeVInt(metaData.getColumnCount());

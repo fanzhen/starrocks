@@ -26,6 +26,9 @@ def main(argv: list[str] | None = None) -> None:
                         help="Ray cluster address (e.g. ray://head:10001)")
     parser.add_argument("--max-workers", type=int, default=10,
                         help="Max gRPC thread pool workers (default: 10)")
+    parser.add_argument("--functions-dir", type=str, default=None,
+                        help="Directory for persisting function registrations "
+                             "(default: ~/.starrocks/coordinator)")
     parser.add_argument("--log-level", type=str, default="INFO",
                         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
                         help="Logging level (default: INFO)")
@@ -37,7 +40,8 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=args.max_workers))
-    servicer = DaftCoordinatorServicer(ray_address=args.ray_address)
+    servicer = DaftCoordinatorServicer(ray_address=args.ray_address,
+                                       functions_dir=args.functions_dir)
     coordinator_pb2_grpc.add_DaftCoordinatorServicer_to_server(servicer, server)
 
     listen_addr = f"[::]:{args.port}"

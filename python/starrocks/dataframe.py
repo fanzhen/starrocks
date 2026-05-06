@@ -268,16 +268,31 @@ class DataFrame:
     # -- internal helpers ------------------------------------------------------
 
     def _has_map_batches(self) -> bool:
-        """Check if the logical plan contains any MapBatches node."""
+        """Check if the logical plan contains any local MapBatches node."""
         return self._contains_map_batches(self._plan)
+
+    def _has_remote_map_batches(self) -> bool:
+        """Check if the plan contains any remote (string-name) MapBatches node."""
+        return self._contains_remote_map_batches(self._plan)
 
     @staticmethod
     def _contains_map_batches(node: LogicalPlan) -> bool:
+        """True if any MapBatches node with a local callable exists."""
         if isinstance(node, MapBatches):
-            return True
+            return node.func is not None
         child = getattr(node, "child", None)
         if child is not None:
             return DataFrame._contains_map_batches(child)
+        return False
+
+    @staticmethod
+    def _contains_remote_map_batches(node: LogicalPlan) -> bool:
+        """True if any MapBatches node with a remote_func_name exists."""
+        if isinstance(node, MapBatches):
+            return node.remote_func_name is not None
+        child = getattr(node, "child", None)
+        if child is not None:
+            return DataFrame._contains_remote_map_batches(child)
         return False
 
     def _execute_pipeline(self):
@@ -293,6 +308,10 @@ class DataFrame:
 
     def show(self, limit: int = 20) -> None:
         """Execute and pretty-print results."""
+        if self._has_remote_map_batches():
+            sql = self._compiler.compile(self._plan)
+            self._session.fetcher.execute_show(sql, limit=limit)
+            return
         if self._has_map_batches():
             daft_df = self._execute_pipeline()
             daft_df.show(limit)
@@ -303,8 +322,11 @@ class DataFrame:
     def to_pandas(self, batch_size: int | None = None) -> Any:
         """Execute and return a pandas DataFrame.
 
-        If the plan contains MapBatches nodes, the pipeline executor runs
-        the hybrid SQL+Daft pipeline automatically.
+        If the plan contains remote MapBatches nodes (string func names),
+        the plan is compiled to SQL and routed through FE.
+
+        If the plan contains local MapBatches nodes (callables), the
+        pipeline executor runs the hybrid SQL+Daft pipeline.
 
         Uses Arrow Flight SQL for zero-copy transfer when configured,
         otherwise falls back to MySQL protocol.
@@ -313,6 +335,9 @@ class DataFrame:
             batch_size: If set, fetch rows in batches to reduce memory usage.
                         Only effective with MySQL protocol (pure SQL path).
         """
+        if self._has_remote_map_batches():
+            sql = self._compiler.compile(self._plan)
+            return self._session.fetcher.execute_to_pandas(sql, batch_size=batch_size)
         if self._has_map_batches():
             daft_df = self._execute_pipeline()
             return daft_df.to_pandas()
@@ -326,6 +351,10 @@ class DataFrame:
 
     def count(self) -> int:
         """Return the number of rows."""
+        if self._has_remote_map_batches():
+            sql = self._compiler.compile(self._plan)
+            count_sql = f"SELECT COUNT(*) AS cnt FROM ({sql}) _t"
+            return self._session.fetcher.execute_count(count_sql)
         if self._has_map_batches():
             daft_df = self._execute_pipeline()
             return len(daft_df.to_pandas())
@@ -335,6 +364,10 @@ class DataFrame:
 
     def first(self) -> dict[str, Any] | None:
         """Return the first row as a dict, or None."""
+        if self._has_remote_map_batches():
+            sql = self._compiler.compile(self._plan)
+            rows = self._session.fetcher.execute_to_dicts(f"{sql} LIMIT 1")
+            return rows[0] if rows else None
         if self._has_map_batches():
             daft_df = self._execute_pipeline()
             pdf = daft_df.limit(1).to_pandas()
@@ -391,16 +424,25 @@ class DataFrame:
         """Apply a Python UDF via Daft (lazy transformation).
 
         Returns a new DataFrame with a MapBatches logical node. Execution
-        is deferred until an action (to_pandas, show, etc.) is called,
-        at which point the pipeline executor auto-routes SQL segments to
-        StarRocks and UDF segments to Daft.
+        is deferred until an action (to_pandas, show, etc.) is called.
 
         Args:
-            func: A Python callable or Daft UDF to apply.
+            func: A Python callable, Daft UDF, or a string name of a
+                  function registered in the Daft Coordinator. When a
+                  string is passed, the plan is compiled to SQL and
+                  routed through FE (no local Daft pipeline).
             result_columns: Optional dict of {col_name: daft.DataType} for output schema.
         Returns:
             A new DataFrame containing the MapBatches transformation.
         """
+        if isinstance(func, str):
+            return DataFrame(
+                MapBatches(self._plan, func=None,
+                           result_columns=result_columns,
+                           remote_func_name=func),
+                self._session,
+                schema=self._schema,
+            )
         return DataFrame(
             MapBatches(self._plan, func=func, result_columns=result_columns),
             self._session,

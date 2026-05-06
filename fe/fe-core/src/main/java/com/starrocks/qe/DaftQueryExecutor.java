@@ -17,7 +17,12 @@ package com.starrocks.qe;
 import com.starrocks.catalog.Column;
 import com.starrocks.common.Config;
 import com.starrocks.common.DaftCoordinatorException;
+import com.starrocks.common.FeConstants;
+import com.starrocks.coordinator.proto.DaftPlanResponse;
 import com.starrocks.coordinator.proto.ExecutionStats;
+import com.starrocks.mysql.MysqlChannel;
+import com.starrocks.mysql.MysqlEofPacket;
+import com.starrocks.mysql.MysqlSerializer;
 import com.starrocks.service.DaftCoordinatorClient;
 import com.starrocks.service.DaftQueryResult;
 import com.starrocks.service.FrontendOptions;
@@ -43,7 +48,9 @@ import com.starrocks.type.TypeFactory;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 
 /**
@@ -135,7 +142,10 @@ public class DaftQueryExecutor {
 
     /**
      * Execute a query containing map_batches via Daft Coordinator.
-     * Sends results back to client via ShowResultSet.
+     *
+     * Uses streaming mode: each gRPC response batch is immediately sent to
+     * the MySQL client as MySQL row packets, so FE only holds one batch
+     * (~4096 rows) in memory at a time instead of the full result set.
      */
     public static void execute(ConnectContext context, StatementBase stmt,
             StmtExecutor executor) throws Exception {
@@ -158,38 +168,118 @@ public class DaftQueryExecutor {
 
         // Use query ID as trace ID for request correlation
         String requestId = context.getQueryId().toString();
+        long maxResultRows = Config.daft_coordinator_max_result_rows;
 
         DaftCoordinatorClient client = new DaftCoordinatorClient(
                 Config.daft_coordinator_host, Config.daft_coordinator_port);
         try {
-            DaftQueryResult result = client.submitDaftPlan(
+            Iterator<DaftPlanResponse> responses = client.submitDaftPlanStreaming(
                     requestId, sourceSQL, arrowFlightEndpoint,
                     planInfo.functionNames, planInfo.postOps);
 
-            // Log execution stats if available
-            ExecutionStats stats = result.getStats();
-            if (stats != null) {
-                LOG.info("DaftQueryExecutor stats [{}]: total={}ms, fetch={}ms, execute={}ms, "
-                                + "input_rows={}, output_rows={}, input_bytes={}",
-                        requestId, stats.getTotalMs(), stats.getDataFetchMs(),
-                        stats.getDaftExecuteMs(), stats.getInputRows(),
-                        stats.getOutputRows(), stats.getInputBytes());
-            }
-
-            // Build ShowResultSet from results
-            ShowResultSetMetaData.Builder metaBuilder = ShowResultSetMetaData.builder();
-            for (String colName : result.getColumnNames()) {
-                metaBuilder.addColumn(new Column(colName, TypeFactory.createDefaultCatalogString()));
-            }
-            ShowResultSet resultSet = new ShowResultSet(metaBuilder.build(), result.getRows());
-
-            executor.sendShowResult(resultSet);
+            streamResultsToClient(context, executor, responses, maxResultRows, requestId);
         } catch (DaftCoordinatorException e) {
             LOG.warn("DaftQueryExecutor failed", e);
             throw new DaftCoordinatorException("Daft Coordinator execution failed: " + e.getMessage(), e);
         } finally {
             client.close();
         }
+    }
+
+    /**
+     * Stream gRPC responses directly to the MySQL client one batch at a time.
+     * This avoids collecting the full result set in FE heap.
+     */
+    private static void streamResultsToClient(ConnectContext context, StmtExecutor executor,
+            Iterator<DaftPlanResponse> responses, long maxResultRows, String requestId)
+            throws IOException, DaftCoordinatorException {
+        MysqlSerializer serializer = context.getSerializer();
+        MysqlChannel channel = context.getMysqlChannel();
+
+        boolean metadataSent = false;
+        long totalRows = 0;
+        List<String> columnNames = null;
+
+        while (responses.hasNext()) {
+            DaftPlanResponse resp = responses.next();
+
+            // Check for error response
+            if (resp.getResultCase() == DaftPlanResponse.ResultCase.ERROR) {
+                if (metadataSent) {
+                    // Can't send error after metadata — best effort: log and break
+                    LOG.error("[{}] gRPC error mid-stream: {}", requestId, resp.getError());
+                    break;
+                }
+                throw new DaftCoordinatorException("Daft Coordinator error: " + resp.getError());
+            }
+
+            // Extract column names from first response
+            if (columnNames == null && resp.getColumnNamesCount() > 0) {
+                columnNames = new ArrayList<>(resp.getColumnNamesList());
+            }
+
+            // Send metadata (column definitions) on first data batch
+            if (!metadataSent && columnNames != null) {
+                ShowResultSetMetaData.Builder metaBuilder = ShowResultSetMetaData.builder();
+                for (String colName : columnNames) {
+                    metaBuilder.addColumn(new Column(colName, TypeFactory.createDefaultCatalogString()));
+                }
+                executor.sendMetaData(metaBuilder.build());
+                metadataSent = true;
+            }
+
+            // Send row data
+            int numRows = resp.getNumRows();
+            int numCols = columnNames != null ? columnNames.size() : 0;
+            List<String> flatValues = resp.getRowValuesList();
+
+            for (int r = 0; r < numRows; r++) {
+                serializer.reset();
+                for (int c = 0; c < numCols; c++) {
+                    int idx = r * numCols + c;
+                    String value = idx < flatValues.size() ? flatValues.get(idx) : "";
+                    if (value == null || value.equals(FeConstants.NULL_STRING)) {
+                        serializer.writeNull();
+                    } else {
+                        serializer.writeLenEncodedString(value);
+                    }
+                }
+                channel.sendOnePacket(serializer.toByteBuffer());
+            }
+
+            totalRows += numRows;
+
+            // Check max result rows limit
+            if (maxResultRows > 0 && totalRows > maxResultRows) {
+                throw new DaftCoordinatorException(
+                        "Daft Coordinator result exceeds maximum rows limit: "
+                                + totalRows + " > " + maxResultRows);
+            }
+
+            // Log stats from last response
+            if (resp.hasStats()) {
+                ExecutionStats stats = resp.getStats();
+                LOG.info("DaftQueryExecutor stats [{}]: total={}ms, fetch={}ms, execute={}ms, "
+                                + "input_rows={}, output_rows={}, input_bytes={}",
+                        requestId, stats.getTotalMs(), stats.getDataFetchMs(),
+                        stats.getDaftExecuteMs(), stats.getInputRows(),
+                        stats.getOutputRows(), stats.getInputBytes());
+            }
+        }
+
+        // If no data was received, still send empty metadata
+        if (!metadataSent) {
+            ShowResultSetMetaData.Builder metaBuilder = ShowResultSetMetaData.builder();
+            if (columnNames != null) {
+                for (String colName : columnNames) {
+                    metaBuilder.addColumn(new Column(colName, TypeFactory.createDefaultCatalogString()));
+                }
+            }
+            executor.sendMetaData(metaBuilder.build());
+        }
+
+        context.updateReturnRows((int) totalRows);
+        context.getState().setEof();
     }
 
     /**

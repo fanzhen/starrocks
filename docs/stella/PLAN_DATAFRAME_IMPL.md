@@ -1392,3 +1392,88 @@ Phase 20 的原始目标 6 项验收用例中，实际实施了以下子集：
 | 3 | 重复启动 idempotent | 提示 "already running" |
 
 **E2E**: `python3 python/tests/verify_phase21c.py`
+
+---
+
+## Stage 6 — 生产化增强 (Phase 22-25)
+
+Phase 21 完成后，Daft Coordinator 核心功能已全部就绪。Stage 6 解决 4 个生产化问题：
+1. 函数注册不持久化
+2. Stream Load 写回内存翻倍
+3. Python SDK 两条执行路径割裂
+4. ShowResultSet 全量驻 FE 堆
+
+### Phase 22: 函数注册持久化
+
+**目标**：Coordinator 重启后自动恢复之前注册的函数，使用 JSON 文件持久化。
+
+**改动**：
+- `python/starrocks/coordinator/function_registry.py` — 新增 `persist_dir` 参数，`register()`/`unregister()` 后自动写 JSON，新增 `load_persisted()` 启动恢复
+- `python/starrocks/coordinator/server.py` — 启动时调用 `registry.load_persisted()`
+- `python/starrocks/coordinator/cli.py` — 新增 `--functions-dir` 参数
+
+**验收用例**：
+| # | 用例 | PASS 条件 |
+|---|------|-----------|
+| 1 | 注册函数 → JSON 文件写入 | 文件存在且内容正确 |
+| 2 | 重启 Coordinator → 函数自动恢复 | ListFunctions 返回之前注册的函数 |
+| 3 | 注销函数 → JSON 更新 | 文件中该函数被移除 |
+| 4 | 无效模块 → 重启跳过 | 损坏注册不影响其他函数恢复 |
+
+**E2E**: `python3 python/tests/verify_phase22_persistence.py` (4/4 PASS)
+
+### Phase 23: Stream Load 流式写回
+
+**目标**：消除 Arrow → CSV 全量物化的内存翻倍。改为 Generator 流式上传。
+
+**改动**：
+- `python/starrocks/coordinator/stream_load_writer.py` — 新增 `_generate_csv_chunks()` 逐批转 CSV 并 yield，`write_table()` 使用 `requests.put(data=generator)` chunked transfer encoding
+
+**验收用例**：
+| # | 用例 | PASS 条件 |
+|---|------|-----------|
+| 1 | write_back 100K 行 | 数据正确写入 |
+| 2 | write_back 含 NULL 值 | NULL 正确保留 |
+| 3 | 内存峰值对比 | 流式写回峰值 < 全量 50% |
+
+**E2E**: `python3 python/tests/verify_phase23_streaming_writeback.py` (1/1 PASS locally, 3/3 with SR_HOST)
+
+### Phase 24: Python SDK 统一
+
+**目标**：`df.map_batches("func_name")` 接受字符串时，自动编译为 SQL 走 FE 路由。
+
+**改动**：
+- `python/starrocks/plan/logical.py` — `MapBatches` 新增 `remote_func_name` 字段
+- `python/starrocks/dataframe.py` — `map_batches()` 检测 str → 设置 remote_func_name；action 方法检查 `_has_remote_map_batches()` → 编译 SQL 走 MySQL
+- `python/starrocks/compiler/sql_compiler.py` — 新增 `_compile_map_batches()` 编译为 `SELECT map_batches('func') FROM (...) _sub`
+
+**验收用例**：
+| # | 用例 | PASS 条件 |
+|---|------|-----------|
+| 1 | `map_batches("fn")` SQL 编译 | 正确生成 map_batches SQL |
+| 2 | `.filter()` 链接 | WHERE 子句正确包装 |
+| 3 | `.select()` 链接 | 列裁剪正确 |
+| 4 | remote/local 检测 | 分类正确 |
+| 5 | callable 回归 | 本地执行路径不受影响 |
+| 6 | action routing | to_pandas 走 SQL 路径 |
+
+**E2E**: `python3 python/tests/verify_phase24_sdk_unify.py` (6/6 PASS)
+
+### Phase 25: FE 流式返回
+
+**目标**：消除 ShowResultSet 全量驻 FE 堆。gRPC 流式响应直接逐批发送 MySQL packets。
+
+**改动**：
+- `fe/.../service/DaftCoordinatorClient.java` — 新增 `submitDaftPlanStreaming()` 返回 `Iterator<DaftPlanResponse>`
+- `fe/.../qe/DaftQueryExecutor.java` — `execute()` 重写为流式：每个 gRPC batch 立即发送 MySQL packets
+- `fe/.../qe/StmtExecutor.java` — `sendMetaData()` 可见性从 private 改为 package-private
+
+**验收用例**：
+| # | 用例 | PASS 条件 |
+|---|------|-----------|
+| 1 | 100K 行 map_batches | 正确结果 |
+| 2 | 10M 行 map_batches | FE 内存不超标 |
+| 3 | max_result_rows 超限 | 正确报错 |
+| 4 | EXPLAIN 查询 | 行为不变 |
+
+**E2E**: `SR_HOST=... python3 python/tests/verify_phase25_streaming_result.py` (需 FE rebuild)

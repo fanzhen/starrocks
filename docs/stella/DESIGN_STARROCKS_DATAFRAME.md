@@ -643,25 +643,25 @@ Daft Driver (Coordinator)
 
 ---
 
-## 11. 已知限制与约束 (Phase 20 完成后)
+## 11. 已知限制与约束 (Phase 25 完成后)
 
-### 11.1 两条执行路径并存
+### 11.1 两条执行路径统一 (Phase 24 已解决)
 
-当前存在两条独立的 `map_batches` 执行路径：
+`DataFrame.map_batches()` 现在同时接受 Python callable 和字符串函数名：
 
-| 路径 | 入口 | 执行方式 | 适用场景 |
-|------|------|---------|---------|
-| **客户端路由 (POC)** | `DataFrame.map_batches(python_callable)` → `PipelineExecutor` | 客户端本地切分 SQL/Daft 段，需要本地 Ray/Daft | 开发调试、本地实验 |
-| **FE 路由 (目标架构)** | SQL `SELECT map_batches('registered_func') FROM ...` | FE 拦截 → gRPC → Coordinator sidecar | 生产部署、只需 pymysql |
+| 调用方式 | 路径 | 执行方式 |
+|---------|------|---------|
+| `df.map_batches(callable)` | 客户端路由 | PipelineExecutor → 本地 Ray/Daft |
+| `df.map_batches("func_name")` | FE 路由 | 编译为 SQL → FE 拦截 → gRPC → Coordinator |
 
-Python `DataFrame.map_batches()` 目前仅接受 Python callable，走客户端路由。未来可扩展为同时接受字符串函数名，自动生成 `SELECT map_batches('func_name')` SQL 走 FE 路由。
+字符串模式下，`SQLCompiler` 将 `MapBatches` 节点编译为 `SELECT map_batches('func_name') FROM (...) _sub`，后续 Filter/Projection/Limit 正常编译为外层 SQL 子句。
 
-### 11.2 结果集大小限制
+### 11.2 结果集流式传输 (Phase 25 已解决)
 
-通过 MySQL 协议拉取 `map_batches` 结果受限于 FE 内存（`ShowResultSet` 全量驻留 FE 堆）。兜底配置 `daft_coordinator_max_result_rows`（默认 100 万行）限制返回行数。
+FE 不再通过 ShowResultSet 全量收集 gRPC 结果。改为每收到一个 gRPC batch（~4096 行）立即编码为 MySQL row packet 发送给客户端，FE 内存开销 = 单个 batch 大小。
 
-- **大结果集场景应使用 `write_back` 模式**：`map_batches` + `write_back` 操作将结果通过 Stream Load 写回 StarRocks，不经过 FE 内存
-- Coordinator 端 `daft_df.to_arrow()` 也是全量物化（Daft 不提供流式 collect API），同样受限于 Coordinator 进程内存
+- `daft_coordinator_max_result_rows` 配置仍然有效作为兜底限制
+- Coordinator 端 `daft_df.to_arrow()` 仍是全量物化（Daft 不提供流式 collect API），受限于 Coordinator 进程内存
 
 ### 11.3 AST 拦截方式的 SQL 兼容性
 
@@ -671,16 +671,17 @@ FE 路由采用 `StmtExecutor` 级别的 AST 拦截（Phase 17c 降级方案）�
 - `map_batches` 必须出现在最外层 SELECT 的 select list 中
 - 嵌套 `map_batches`（如 `SELECT map_batches('f2') FROM (SELECT map_batches('f1') FROM t)`）通过 `DaftQueryExecutor.extractDaftPlan()` 递归展平，支持任意深度嵌套
 
-### 11.4 Stream Load 写回
+### 11.4 Stream Load 流式写回 (Phase 23 已解决)
 
-- 写回数据全量物化为 CSV 后通过 HTTP PUT 一次性发送，大数据量时内存翻倍（Arrow + CSV）
-- 未来可改为 Generator 流式上传（`requests.put(data=generator)`）
-- NULL 值通过 `\N` 标记正确传递（PyArrow 默认输出空字符串，已通过 `_replace_nulls_with_marker` 转换）
+- 写回数据通过 Generator 流式上传（`requests.put(data=generator)`），逐批转 CSV（8192 行/chunk），内存开销 ≈ 单个 chunk
+- NULL 值通过 `\N` 标记正确传递（per-batch `_replace_nulls_with_marker` 转换）
+- FE 307 重定向时重新创建 generator（generator 只能消费一次）
 
-### 11.5 Coordinator 生命周期
+### 11.5 Coordinator 生命周期 (Phase 22 部分解决)
 
 - `start_daft_coordinator.sh` / `stop_daft_coordinator.sh` 是独立脚本，未集成到 FE 的 `start_fe.sh` / `stop_fe.sh`
-- 函数注册不跨 Coordinator 重启持久化（Coordinator 重启后需重新注册）
+- 函数注册跨 Coordinator 重启持久化（JSON 文件 `~/.starrocks/coordinator/functions.json`，可通过 `--functions-dir` 指定）
+- 加载失败的函数 log warning 但不阻塞其他函数恢复
 - gRPC 通道配置了 Keep-Alive（60s interval, 10s timeout），防止云环境防火墙静默断连
 
 ### 11.6 Arrow Flight SQL 部署

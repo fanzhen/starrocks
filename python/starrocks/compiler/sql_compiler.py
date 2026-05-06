@@ -9,6 +9,7 @@ from starrocks.plan.logical import (
     Join,
     Limit,
     LogicalPlan,
+    MapBatches,
     Projection,
     RawSQL,
     SetOperation,
@@ -120,6 +121,10 @@ class SQLCompiler:
         if isinstance(node, SubqueryAlias):
             inner = self._compile(node.child)
             return f"({inner}) `{node.alias}`"
+        if isinstance(node, MapBatches) and node.remote_func_name:
+            inner = self._compile_map_batches(node)
+            alias = self._next_alias()
+            return f"({inner}) {alias}"
         # Any other plan node (Join, SetOperation, Projection, Filter, etc.)
         # gets wrapped as a subquery
         inner = self._compile(node)
@@ -137,6 +142,15 @@ class SQLCompiler:
             return f"SELECT * FROM {left_sql} {join_type} {right_sql} ON {on_sql}"
         else:
             return f"SELECT * FROM {left_sql} {join_type} {right_sql}"
+
+    def _compile_map_batches(self, node: MapBatches) -> str:
+        """Compile a remote MapBatches node to SQL.
+
+        Generates: SELECT map_batches('func_name') FROM (child_sql) _sub
+        """
+        child_sql = self._compile(node.child)
+        alias = self._next_alias()
+        return f"SELECT map_batches('{node.remote_func_name}') FROM ({child_sql}) {alias}"
 
     def _compile_set_op(self, plan: SetOperation) -> str:
         """Compile a UNION / UNION ALL / etc."""

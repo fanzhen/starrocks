@@ -240,6 +240,70 @@ public class DaftCoordinatorClient {
         }
     }
 
+    /**
+     * Submit a Daft plan and return a streaming iterator of responses.
+     * The caller is responsible for consuming and closing the iterator.
+     * This avoids collecting all results into memory at once.
+     */
+    public Iterator<DaftPlanResponse> submitDaftPlanStreaming(String requestId, String sourceSQL,
+            String arrowFlightEndpoint, List<String> functionNames,
+            List<DaftQueryExecutor.PostOp> postOps)
+            throws DaftCoordinatorException {
+        ensureChannel();
+
+        DaftPlanRequest.Builder requestBuilder = DaftPlanRequest.newBuilder()
+                .setRequestId(requestId)
+                .setSourceSql(sourceSQL)
+                .setArrowFlightEndpoint(arrowFlightEndpoint)
+                .setUseDirectRead(true);
+
+        for (String funcName : functionNames) {
+            requestBuilder.addOperations(DaftOperation.newBuilder()
+                    .setMapBatches(MapBatchesOp.newBuilder()
+                            .setFunctionName(funcName)
+                            .build())
+                    .build());
+        }
+
+        if (postOps != null) {
+            for (DaftQueryExecutor.PostOp postOp : postOps) {
+                switch (postOp.type) {
+                    case FILTER:
+                        requestBuilder.addOperations(DaftOperation.newBuilder()
+                                .setFilter(FilterOp.newBuilder()
+                                        .setExprJson(postOp.filterExprJson)
+                                        .build())
+                                .build());
+                        break;
+                    case PROJECTION:
+                        requestBuilder.addOperations(DaftOperation.newBuilder()
+                                .setProjection(ProjectionOp.newBuilder()
+                                        .addAllColumns(postOp.columns)
+                                        .build())
+                                .build());
+                        break;
+                    case LIMIT:
+                        requestBuilder.addOperations(DaftOperation.newBuilder()
+                                .setLimit(LimitOp.newBuilder()
+                                        .setCount(postOp.limitCount)
+                                        .build())
+                                .build());
+                        break;
+                }
+            }
+        }
+
+        long timeoutSeconds = Config.daft_coordinator_timeout_seconds;
+        try {
+            return stub.withDeadlineAfter(timeoutSeconds, TimeUnit.SECONDS)
+                    .submitDaftPlan(requestBuilder.build());
+        } catch (StatusRuntimeException e) {
+            LOG.warn("submitDaftPlanStreaming failed: {}", e.getStatus(), e);
+            throw new DaftCoordinatorException(
+                    "Daft Coordinator unavailable: " + e.getStatus().getDescription(), e);
+        }
+    }
+
     public void registerFunction(String name, String modulePath, String callableName)
             throws DaftCoordinatorException {
         ensureChannel();

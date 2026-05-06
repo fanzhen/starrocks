@@ -120,8 +120,13 @@ class MapBatches(LogicalPlan):
 
     This is a lazy transformation node. Execution is deferred until an
     action (to_pandas, show, etc.) triggers the pipeline executor.
+
+    When ``remote_func_name`` is set (func passed as a string), the
+    action methods compile the plan to SQL and route through FE instead
+    of running a local Daft pipeline.
     """
 
     child: LogicalPlan
-    func: Callable
+    func: Callable | None = None
     result_columns: dict | None = None
+    remote_func_name: str | None = None
