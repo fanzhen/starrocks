@@ -30,6 +30,7 @@ import com.starrocks.sql.ast.SelectListItem;
 import com.starrocks.sql.ast.SelectRelation;
 import com.starrocks.sql.ast.StatementBase;
 import com.starrocks.sql.ast.SubqueryRelation;
+import com.starrocks.sql.ast.TableRelation;
 import com.starrocks.sql.ast.expression.BinaryPredicate;
 import com.starrocks.sql.ast.expression.BinaryType;
 import com.starrocks.sql.ast.expression.Expr;
@@ -145,11 +146,15 @@ public class DaftQueryExecutor {
         // Extract plan info with nested map_batches merging and post-ops
         DaftPlanInfo planInfo = extractDaftPlanWithWrapper(selectRelation);
 
+        // Qualify source SQL with current database so Arrow Flight connection
+        // (which has no database context) can resolve table names.
+        String sourceSQL = qualifySourceSQL(planInfo.sourceSQL, context.getDatabase());
+
         // Build Arrow Flight endpoint
         String arrowFlightEndpoint = buildArrowFlightEndpoint();
 
         LOG.info("DaftQueryExecutor: functions={}, sourceSQL={}, postOps={}, endpoint={}",
-                planInfo.functionNames, planInfo.sourceSQL, planInfo.postOps.size(),
+                planInfo.functionNames, sourceSQL, planInfo.postOps.size(),
                 arrowFlightEndpoint);
 
         // Use query ID as trace ID for request correlation
@@ -159,7 +164,7 @@ public class DaftQueryExecutor {
                 Config.daft_coordinator_host, Config.daft_coordinator_port);
         try {
             DaftQueryResult result = client.submitDaftPlan(
-                    requestId, planInfo.sourceSQL, arrowFlightEndpoint,
+                    requestId, sourceSQL, arrowFlightEndpoint,
                     planInfo.functionNames, planInfo.postOps);
 
             // Log execution stats if available
@@ -543,6 +548,28 @@ public class DaftQueryExecutor {
 
     private static String escapeJson(String s) {
         return s.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    /**
+     * Qualify source SQL with database context.
+     * Arrow Flight connections don't carry the database context from the client session,
+     * so we need to ensure table references are fully qualified.
+     */
+    private static String qualifySourceSQL(String sourceSQL, String database) {
+        if (database == null || database.isEmpty()) {
+            return sourceSQL;
+        }
+        // Simple heuristic: if source SQL is "SELECT * FROM `tablename`",
+        // replace with "SELECT * FROM `db`.`tablename`"
+        String prefix = "SELECT * FROM ";
+        if (sourceSQL.startsWith(prefix)) {
+            String tablePart = sourceSQL.substring(prefix.length()).trim();
+            // Only qualify if table name doesn't already have a dot (already qualified)
+            if (!tablePart.contains(".")) {
+                return prefix + "`" + database + "`." + tablePart;
+            }
+        }
+        return sourceSQL;
     }
 
     private static String buildArrowFlightEndpoint() {
