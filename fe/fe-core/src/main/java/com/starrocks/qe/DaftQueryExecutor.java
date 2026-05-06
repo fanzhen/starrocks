@@ -393,13 +393,26 @@ public class DaftQueryExecutor {
         // Only support simple comparison operators
         String opStr;
         switch (op) {
-            case EQ: opStr = "="; break;
-            case NE: opStr = "!="; break;
-            case GT: opStr = ">"; break;
-            case GE: opStr = ">="; break;
-            case LT: opStr = "<"; break;
-            case LE: opStr = "<="; break;
-            default: return null;
+            case EQ:
+                opStr = "=";
+                break;
+            case NE:
+                opStr = "!=";
+                break;
+            case GT:
+                opStr = ">";
+                break;
+            case GE:
+                opStr = ">=";
+                break;
+            case LT:
+                opStr = "<";
+                break;
+            case LE:
+                opStr = "<=";
+                break;
+            default:
+                return null;
         }
 
         Expr left = bp.getChild(0);
@@ -423,13 +436,26 @@ public class DaftQueryExecutor {
             BinaryType commuted = op.commutative();
             String commutedStr;
             switch (commuted) {
-                case EQ: commutedStr = "="; break;
-                case NE: commutedStr = "!="; break;
-                case GT: commutedStr = ">"; break;
-                case GE: commutedStr = ">="; break;
-                case LT: commutedStr = "<"; break;
-                case LE: commutedStr = "<="; break;
-                default: return null;
+                case EQ:
+                    commutedStr = "=";
+                    break;
+                case NE:
+                    commutedStr = "!=";
+                    break;
+                case GT:
+                    commutedStr = ">";
+                    break;
+                case GE:
+                    commutedStr = ">=";
+                    break;
+                case LT:
+                    commutedStr = "<";
+                    break;
+                case LE:
+                    commutedStr = "<=";
+                    break;
+                default:
+                    return null;
             }
             return "{\"col\": \"" + escapeJson(colName)
                     + "\", \"op\": \"" + commutedStr
