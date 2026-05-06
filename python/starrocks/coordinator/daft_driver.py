@@ -43,14 +43,29 @@ class DaftDriver:
         """
         result_table, stats = self._execute_to_arrow(request)
         col_names = result_table.column_names
-        # Convert columns to Python lists in bulk (much faster than per-element access).
-        py_columns = [col.to_pylist() for col in result_table.columns]
+        num_rows = result_table.num_rows
+        num_cols = result_table.num_columns
+
+        # Fast path: convert entire columns to string arrays using pyarrow cast,
+        # avoiding per-cell Python str() calls.
+        import pyarrow as pa
+        import pyarrow.compute as pc
+
+        str_columns = []
+        for col in result_table.columns:
+            # Cast column to string type (handles all Arrow types efficiently)
+            str_col = pc.cast(col, pa.string())
+            # Replace nulls with "NULL" string
+            str_col = pc.if_else(pc.is_null(col), "NULL", str_col)
+            str_columns.append(str_col.to_pylist())
+
+        # Build rows by transposing column-major to row-major
         rows = []
-        for i in range(result_table.num_rows):
-            row = ["NULL" if py_columns[c][i] is None else str(py_columns[c][i])
-                   for c in range(result_table.num_columns)]
+        for i in range(num_rows):
+            row = [str_columns[c][i] for c in range(num_cols)]
             rows.append(row)
-        stats["output_rows"] = result_table.num_rows
+
+        stats["output_rows"] = num_rows
         return col_names, rows, stats
 
     def _execute_to_arrow(self, request):

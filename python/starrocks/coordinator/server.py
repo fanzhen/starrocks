@@ -69,10 +69,9 @@ class DaftCoordinatorServicer(coordinator_pb2_grpc.DaftCoordinatorServicer):
             for start in range(0, total, batch_size):
                 end = min(start + batch_size, total)
                 batch_rows = rows[start:end]
-                # Flatten: each row's values concatenated
-                flat_values = []
-                for row in batch_rows:
-                    flat_values.extend(row)
+                # Flatten: each row's values concatenated (optimized)
+                import itertools
+                flat_values = list(itertools.chain.from_iterable(batch_rows))
                 is_last = (end >= total)
                 resp = coordinator_pb2.DaftPlanResponse(
                     column_names=col_names if start == 0 else [],
