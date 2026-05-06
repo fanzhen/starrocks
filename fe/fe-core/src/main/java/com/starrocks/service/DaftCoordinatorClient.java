@@ -56,6 +56,14 @@ public class DaftCoordinatorClient {
         this.port = port;
     }
 
+    private synchronized void resetChannel() {
+        if (channel != null) {
+            channel.shutdownNow();
+            channel = null;
+            stub = null;
+        }
+    }
+
     private synchronized void ensureChannel() {
         if (channel == null || channel.isShutdown()) {
             channel = ManagedChannelBuilder.forAddress(host, port)
@@ -115,6 +123,8 @@ public class DaftCoordinatorClient {
                 }
                 lastException = e;
                 LOG.warn("submitDaftPlan attempt {} failed: {}", attempt + 1, e.getMessage());
+                // Rebuild channel before retry — the old connection may be in a bad state
+                resetChannel();
             }
         }
         throw lastException;

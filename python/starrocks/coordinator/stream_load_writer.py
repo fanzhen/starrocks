@@ -32,6 +32,10 @@ class StreamLoadWriter:
         outputs null as empty string, which StarRocks interprets as an
         empty string (not NULL). This method casts all columns to string
         and replaces nulls with \\N.
+
+        Known limitation: if a string column contains the literal value
+        '\\N', it will be indistinguishable from NULL after Stream Load.
+        This is inherent to the StarRocks CSV \\N convention.
         """
         new_columns = []
         for col in table.columns:
