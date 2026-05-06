@@ -496,7 +496,7 @@ public class DaftQueryExecutor {
             } catch (Exception e) {
                 // not a long
             }
-            return "\"" + escapeJson(expr.toSql()) + "\"";
+            return "\"" + escapeJson(((LiteralExpr) expr).getStringValue()) + "\"";
         }
         return null;
     }
