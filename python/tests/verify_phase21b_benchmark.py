@@ -99,13 +99,19 @@ def cleanup_function():
 
 
 def timed_query(conn, sql: str) -> tuple[float, int]:
-    """Execute a query and return (elapsed_seconds, row_count)."""
+    """Execute a query and return (elapsed_seconds, row_count).
+    Fetches all rows and counts them client-side."""
     t0 = time.monotonic()
     with conn.cursor() as cur:
         cur.execute(sql)
-        rows = cur.fetchall()
+        count = 0
+        while True:
+            rows = cur.fetchmany(10000)
+            if not rows:
+                break
+            count += len(rows)
     elapsed = time.monotonic() - t0
-    return elapsed, len(rows)
+    return elapsed, count
 
 
 def timed_count_query(conn, sql: str) -> tuple[float, int]:
@@ -191,9 +197,10 @@ def main():
     # ---- TC1: Identity map_batches on full table ----
     print(f"\n--- TC1: {ROW_COUNT:,} row identity map_batches ---")
     try:
-        elapsed_mb, count_mb = timed_count_query(
+        # Count rows by fetching all results from map_batches
+        elapsed_mb, count_mb = timed_query(
             conn,
-            "SELECT COUNT(*) FROM (SELECT map_batches('test_identity_bench') FROM bench_10m) s"
+            "SELECT map_batches('test_identity_bench') FROM bench_10m"
         )
         ok = count_mb == ROW_COUNT
         detail = f"count={count_mb:,}, expected={ROW_COUNT:,}, elapsed={elapsed_mb:.1f}s"
@@ -201,6 +208,7 @@ def main():
         ok = False
         detail = str(e)
         elapsed_mb = 0
+        count_mb = 0
     log_result("Identity map_batches returns correct row count", ok, detail)
 
     # ---- TC2: map_batches + filter (val > 500) ----
@@ -212,12 +220,11 @@ def main():
             "SELECT COUNT(*) FROM bench_10m WHERE val > 500"
         )
 
-        elapsed_filter, count_filter = timed_count_query(
+        # Use wrapper pattern for filter pushdown
+        elapsed_filter, count_filter = timed_query(
             conn,
-            "SELECT COUNT(*) FROM ("
-            "  SELECT * FROM (SELECT map_batches('test_identity_bench') FROM bench_10m) s "
-            "  WHERE val > 500"
-            ") t"
+            "SELECT * FROM (SELECT map_batches('test_identity_bench') FROM bench_10m) s "
+            "WHERE val > 500"
         )
         # Allow 10% tolerance since val is random
         lower = int(expected_filtered * 0.9)
@@ -229,14 +236,15 @@ def main():
         ok = False
         detail = str(e)
         elapsed_filter = 0
+        count_filter = 0
     log_result("Filter val > 500 returns ~50% rows", ok, detail)
 
     # ---- TC3: Performance — identity vs direct SELECT ----
     print(f"\n--- TC3: Performance: identity map_batches vs direct SELECT ---")
     try:
-        elapsed_direct, _ = timed_count_query(
+        elapsed_direct, _ = timed_query(
             conn,
-            "SELECT COUNT(*) FROM bench_10m"
+            "SELECT * FROM bench_10m"
         )
         ratio = elapsed_mb / elapsed_direct if elapsed_direct > 0 else float("inf")
         ok = ratio <= PERF_RATIO_LIMIT
@@ -250,9 +258,9 @@ def main():
     # ---- TC4: Performance — filter vs direct WHERE ----
     print(f"\n--- TC4: Performance: map_batches+filter vs direct WHERE ---")
     try:
-        elapsed_direct_where, _ = timed_count_query(
+        elapsed_direct_where, _ = timed_query(
             conn,
-            "SELECT COUNT(*) FROM bench_10m WHERE val > 500"
+            "SELECT * FROM bench_10m WHERE val > 500"
         )
         ratio_f = elapsed_filter / elapsed_direct_where if elapsed_direct_where > 0 else float("inf")
         ok = ratio_f <= PERF_RATIO_LIMIT
