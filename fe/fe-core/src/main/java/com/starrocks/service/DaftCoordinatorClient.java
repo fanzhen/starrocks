@@ -96,7 +96,29 @@ public class DaftCoordinatorClient {
         DaftPlanRequest request = requestBuilder.build();
         long timeoutSeconds = Config.daft_coordinator_timeout_seconds;
         long maxResultRows = Config.daft_coordinator_max_result_rows;
+        int maxRetries = Config.daft_coordinator_max_retries;
 
+        DaftCoordinatorException lastException = null;
+        for (int attempt = 0; attempt <= maxRetries; attempt++) {
+            if (attempt > 0) {
+                LOG.info("Retrying submitDaftPlan (attempt {}/{})", attempt + 1, maxRetries + 1);
+            }
+            try {
+                return doSubmitDaftPlan(request, timeoutSeconds, maxResultRows);
+            } catch (DaftCoordinatorException e) {
+                // Don't retry application-level errors (e.g., max rows exceeded)
+                if (e.getCause() == null || !(e.getCause() instanceof StatusRuntimeException)) {
+                    throw e;
+                }
+                lastException = e;
+                LOG.warn("submitDaftPlan attempt {} failed: {}", attempt + 1, e.getMessage());
+            }
+        }
+        throw lastException;
+    }
+
+    private DaftQueryResult doSubmitDaftPlan(DaftPlanRequest request,
+            long timeoutSeconds, long maxResultRows) throws DaftCoordinatorException {
         try {
             Iterator<DaftPlanResponse> responses = stub
                     .withDeadlineAfter(timeoutSeconds, TimeUnit.SECONDS)

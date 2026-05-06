@@ -315,7 +315,7 @@ def main():
             "SELECT map_batches('test_identity_p20a') FROM "
             "(SELECT generate_series AS id FROM TABLE(generate_series(1, 100))) sub"
         )
-        ok = ok_err and "max" in err_detail.lower() or "limit" in err_detail.lower() or "exceed" in err_detail.lower()
+        ok = ok_err and ("max" in err_detail.lower() or "limit" in err_detail.lower() or "exceed" in err_detail.lower())
         detail = f"got_error={ok_err}, detail={err_detail}"
 
         # Reset

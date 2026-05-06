@@ -66,10 +66,14 @@ class DaftDriver:
         t_start = time.monotonic()
 
         # Choose data fetch strategy based on use_direct_read flag.
-        if request.use_direct_read and request.source_sql and request.arrow_flight_endpoint:
-            daft_df = self._read_sql_direct(request, request_id)
+        # Both paths fetch via ADBC first, so we capture input stats from the Arrow table.
+        arrow_table = self._fetch_source_data(request)
+        input_rows = arrow_table.num_rows
+        input_bytes = arrow_table.nbytes
+
+        if request.use_direct_read and request.arrow_flight_endpoint:
+            daft_df = self._arrow_to_daft_via_ray(arrow_table, request_id)
         else:
-            arrow_table = self._fetch_source_data(request)
             logger.info("[%s] Fetched %d rows from source (legacy path)",
                          request_id, arrow_table.num_rows)
             daft_df = daft.from_arrow(arrow_table)
@@ -82,17 +86,6 @@ class DaftDriver:
         # Collect results.
         result_table = daft_df.to_arrow()
         t_end = time.monotonic()
-
-        input_bytes = 0
-        input_rows = 0
-        # Try to estimate input size from the fetched data
-        try:
-            # For direct read, input info is not easily available;
-            # for legacy path, we captured it above.
-            input_rows = result_table.num_rows  # approximate
-            input_bytes = result_table.nbytes
-        except Exception:
-            pass
 
         stats = {
             "data_fetch_ms": int((t_fetch - t_start) * 1000),
@@ -108,27 +101,22 @@ class DaftDriver:
 
         return result_table, stats
 
-    def _read_sql_direct(self, request, request_id: str):
-        """Fetch data via ADBC and transfer through Ray object store.
+    def _arrow_to_daft_via_ray(self, arrow_table, request_id: str):
+        """Transfer Arrow table to Daft via Ray object store if available.
 
         The Arrow table is placed into Ray shared memory so that the
         Coordinator process does not hold it in its own Python heap.
-        This avoids the Coordinator becoming a memory bottleneck for
-        large datasets.
 
         Falls back to plain daft.from_arrow() if Ray is unavailable.
         """
         import daft
 
-        arrow_table = self._fetch_source_data(request)
         logger.info("[%s] Fetched %d rows via ADBC (direct read path)",
                      request_id, arrow_table.num_rows)
 
         try:
             import ray
             if ray.is_initialized():
-                # Put into Ray object store — data moves to shared memory
-                # and can be GC'd from Coordinator's Python heap.
                 ds = ray.data.from_arrow(arrow_table)
                 daft_df = daft.from_ray_dataset(ds)
                 logger.info("[%s] Data transferred to Ray object store", request_id)
