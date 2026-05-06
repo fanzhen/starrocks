@@ -1335,3 +1335,60 @@ Phase 20 的原始目标 6 项验收用例中，实际实施了以下子集：
 - **Phase 17 拆为 3 个 sub-phase**：FE 改动涉及语法/AST/分析器/优化器/计划器 5 个层面 + gRPC Java 依赖引入，单一 Phase 无法保证 E2E 可测。拆分后每个 sub-phase 独立可验证：17a 只验连接+状态，17b 只验解析，17c 验全链路执行
 - **Phase 18 函数注册在 FE 路由之后**：先跑通"硬编码函数名"的全链路，再加注册机制
 - **Phase 19 数据直连**：简化为 pull 模型（ADBC → Ray object store），零 C++/Java 编译即实现数据不驻留 Coordinator 内存；Stream Load 写回实现 Worker→BE 闭环
+
+---
+
+## Phase 21: 跨引擎优化 + 大规模验证 + 生命周期集成
+
+> 日期: 2026-05-06
+> 承接 Phase 20 的 3 项未实施内容 + 1 项部分完成内容
+
+### Phase 21a: 跨段谓词下推 + 列裁剪
+
+**目标**：用户在 map_batches 查询外层写的 `WHERE`、`SELECT`、`LIMIT` 子句，自动下推为 FilterOp、ProjectionOp、LimitOp 发送给 Daft Coordinator 执行。
+
+**改动**：
+- `DaftQueryExecutor.java` — 扩展 AST 拦截：检测 wrapper 模式（外层 SELECT 包裹 map_batches 子查询），提取 WHERE/SELECT/LIMIT 为 PostOp 列表
+- `DaftCoordinatorClient.java` — 新增 `submitDaftPlan()` 重载，将 PostOps 映射为 proto FilterOp/ProjectionOp/LimitOp
+- `containsMapBatches()` 扩展为同时检测 wrapper 模式
+
+**验收用例**：
+| # | SQL | PASS 条件 |
+|---|-----|-----------|
+| 1 | `SELECT * FROM (SELECT map_batches('f') FROM t) s WHERE id > 5` | 返回 id > 5 的行 |
+| 2 | `SELECT id, name FROM (SELECT map_batches('f') FROM t) s` | 只返回 2 列 |
+| 3 | `SELECT id FROM (...) s WHERE id > 5 LIMIT 3` | ≤3 行，id > 5 |
+| 4 | `SELECT map_batches('f') FROM t` (无包装) | 回归不变 |
+| 5 | `EXPLAIN SELECT id FROM (...) s WHERE id > 5` | 输出含 filter + projection |
+
+**E2E**: `python3 python/tests/verify_phase21a.py`
+
+### Phase 21b: 10M 行 E2E Benchmark
+
+**目标**：验证 Daft Coordinator 在 10M 行规模下的正确性和性能（端到端 ≤ 直接 SQL 的 3x）。
+
+**改动**：纯测试脚本 `python/tests/verify_phase21b_benchmark.py`
+
+**验收用例**：
+| # | 用例 | PASS 条件 |
+|---|------|-----------|
+| 1 | 10M 行 identity map_batches | COUNT = 10M |
+| 2 | 10M 行 + filter(val > 500) | COUNT ≈ 5M (±10%) |
+| 3 | 性能: identity vs 直接 SELECT | ratio ≤ 3x |
+| 4 | 性能: filter vs 直接 WHERE | ratio ≤ 3x |
+
+### Phase 21c: Coordinator 生命周期集成
+
+**目标**：Coordinator 启动脚本支持 FE 存活检测，确保可与 FE 联动启停。
+
+**改动**：
+- `bin/start_daft_coordinator.sh` — 新增 `--wait-fe` 参数和 `WAIT_FE` 环境变量，启动前等待 FE 查询端口就绪
+
+**验收用例**：
+| # | 用例 | PASS 条件 |
+|---|------|-----------|
+| 1 | `start_daft_coordinator.sh --daemon` | PID 文件创建，gRPC 可达 |
+| 2 | `stop_daft_coordinator.sh` | 进程停止，PID 文件清理 |
+| 3 | 重复启动 idempotent | 提示 "already running" |
+
+**E2E**: `python3 python/tests/verify_phase21c.py`

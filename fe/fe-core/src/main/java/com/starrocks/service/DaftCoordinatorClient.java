@@ -22,15 +22,19 @@ import com.starrocks.coordinator.proto.DaftOperation;
 import com.starrocks.coordinator.proto.DaftPlanRequest;
 import com.starrocks.coordinator.proto.DaftPlanResponse;
 import com.starrocks.coordinator.proto.ExecutionStats;
+import com.starrocks.coordinator.proto.FilterOp;
+import com.starrocks.coordinator.proto.LimitOp;
 import com.starrocks.coordinator.proto.ListFunctionsRequest;
 import com.starrocks.coordinator.proto.ListFunctionsResponse;
 import com.starrocks.coordinator.proto.MapBatchesOp;
+import com.starrocks.coordinator.proto.ProjectionOp;
 import com.starrocks.coordinator.proto.RegisterFunctionRequest;
 import com.starrocks.coordinator.proto.RegisterFunctionResponse;
 import com.starrocks.coordinator.proto.StatusRequest;
 import com.starrocks.coordinator.proto.StatusResponse;
 import com.starrocks.coordinator.proto.UnregisterFunctionRequest;
 import com.starrocks.coordinator.proto.UnregisterFunctionResponse;
+import com.starrocks.qe.DaftQueryExecutor;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.StatusRuntimeException;
@@ -88,6 +92,17 @@ public class DaftCoordinatorClient {
     public DaftQueryResult submitDaftPlan(String requestId, String sourceSQL,
             String arrowFlightEndpoint, List<String> functionNames)
             throws DaftCoordinatorException {
+        return submitDaftPlan(requestId, sourceSQL, arrowFlightEndpoint,
+                functionNames, new ArrayList<>());
+    }
+
+    /**
+     * Submit a Daft plan with post-processing operations (filter, projection, limit).
+     */
+    public DaftQueryResult submitDaftPlan(String requestId, String sourceSQL,
+            String arrowFlightEndpoint, List<String> functionNames,
+            List<DaftQueryExecutor.PostOp> postOps)
+            throws DaftCoordinatorException {
         ensureChannel();
 
         DaftPlanRequest.Builder requestBuilder = DaftPlanRequest.newBuilder()
@@ -96,12 +111,42 @@ public class DaftCoordinatorClient {
                 .setArrowFlightEndpoint(arrowFlightEndpoint)
                 .setUseDirectRead(true);
 
+        // Add map_batches operations
         for (String funcName : functionNames) {
             requestBuilder.addOperations(DaftOperation.newBuilder()
                     .setMapBatches(MapBatchesOp.newBuilder()
                             .setFunctionName(funcName)
                             .build())
                     .build());
+        }
+
+        // Add post-processing operations (filter, projection, limit)
+        if (postOps != null) {
+            for (DaftQueryExecutor.PostOp postOp : postOps) {
+                switch (postOp.type) {
+                    case FILTER:
+                        requestBuilder.addOperations(DaftOperation.newBuilder()
+                                .setFilter(FilterOp.newBuilder()
+                                        .setExprJson(postOp.filterExprJson)
+                                        .build())
+                                .build());
+                        break;
+                    case PROJECTION:
+                        requestBuilder.addOperations(DaftOperation.newBuilder()
+                                .setProjection(ProjectionOp.newBuilder()
+                                        .addAllColumns(postOp.columns)
+                                        .build())
+                                .build());
+                        break;
+                    case LIMIT:
+                        requestBuilder.addOperations(DaftOperation.newBuilder()
+                                .setLimit(LimitOp.newBuilder()
+                                        .setCount(postOp.limitCount)
+                                        .build())
+                                .build());
+                        break;
+                }
+            }
         }
 
         DaftPlanRequest request = requestBuilder.build();

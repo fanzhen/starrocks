@@ -25,6 +25,12 @@
 # Usage:
 #   bin/start_daft_coordinator.sh             # foreground
 #   bin/start_daft_coordinator.sh --daemon    # background with PID file
+#   bin/start_daft_coordinator.sh --daemon --wait-fe  # wait for FE, then background
+#
+# Extra environment variables for FE liveness check:
+#   WAIT_FE=true           - Wait for FE query port before starting (default: false)
+#   FE_QUERY_PORT          - FE MySQL port to check (default: 9030)
+#   MAX_WAIT_SECONDS       - Max seconds to wait for FE (default: 120)
 
 set -e
 
@@ -63,7 +69,36 @@ if [ -f "${PID_FILE}" ]; then
     fi
 fi
 
-if [ "$1" = "--daemon" ]; then
+# Optional: wait for FE to be ready before starting
+FE_QUERY_PORT="${FE_QUERY_PORT:-9030}"
+WAIT_FE="${WAIT_FE:-false}"
+MAX_WAIT_SECONDS="${MAX_WAIT_SECONDS:-120}"
+
+if [ "$WAIT_FE" = "true" ] || [ "$1" = "--wait-fe" ] || [ "$2" = "--wait-fe" ]; then
+    echo "Waiting for FE query port ${FE_QUERY_PORT} to be ready (max ${MAX_WAIT_SECONDS}s)..."
+    waited=0
+    while ! nc -z 127.0.0.1 "${FE_QUERY_PORT}" 2>/dev/null; do
+        if [ "$waited" -ge "$MAX_WAIT_SECONDS" ]; then
+            echo "WARNING: FE port ${FE_QUERY_PORT} not ready after ${MAX_WAIT_SECONDS}s, starting anyway"
+            break
+        fi
+        sleep 2
+        waited=$((waited + 2))
+    done
+    if nc -z 127.0.0.1 "${FE_QUERY_PORT}" 2>/dev/null; then
+        echo "FE is ready (waited ${waited}s)"
+    fi
+fi
+
+# Determine daemon mode (strip --wait-fe from args)
+DAEMON_MODE=false
+for arg in "$@"; do
+    if [ "$arg" = "--daemon" ]; then
+        DAEMON_MODE=true
+    fi
+done
+
+if [ "$DAEMON_MODE" = "true" ]; then
     echo "Starting Daft Coordinator in daemon mode on port ${DAFT_COORDINATOR_PORT}..."
     nohup ${CMD} >> "${LOG_FILE}" 2>&1 &
     echo $! > "${PID_FILE}"
