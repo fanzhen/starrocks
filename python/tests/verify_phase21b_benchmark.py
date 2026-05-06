@@ -37,12 +37,10 @@ COORDINATOR_PORT = int(os.environ.get("COORDINATOR_PORT", "50051"))
 # 10M rows, but can be overridden for smaller tests
 ROW_COUNT = int(os.environ.get("BENCH_ROW_COUNT", "10000000"))
 BATCH_SIZE = int(os.environ.get("BENCH_BATCH_SIZE", "1000000"))  # INSERT batch size
-# Performance ratio limit: current architecture uses text serialization
-# for results (gRPC streaming → ShowResultSet → MySQL text protocol),
-# which dominates latency for large result sets. Coordinator-side execution
-# is typically <100ms for 100K rows, but result serialization adds overhead.
-# A future optimization (Arrow Flight result path) would bring this closer to 1x.
-PERF_RATIO_LIMIT = float(os.environ.get("BENCH_PERF_RATIO", "15.0"))
+# Performance ratio limit: after pyarrow.compute.cast optimization, the
+# overhead is ~1.3-1.6x direct SQL. Coordinator execution is <1s for 10M
+# rows; remaining overhead is gRPC streaming + MySQL text protocol transfer.
+PERF_RATIO_LIMIT = float(os.environ.get("BENCH_PERF_RATIO", "3.0"))
 
 PASS = 0
 FAIL = 0
