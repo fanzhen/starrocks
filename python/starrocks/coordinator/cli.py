@@ -40,8 +40,10 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=args.max_workers))
-    servicer = DaftCoordinatorServicer(ray_address=args.ray_address,
-                                       functions_dir=args.functions_dir)
+    kwargs = {"ray_address": args.ray_address}
+    if args.functions_dir is not None:
+        kwargs["functions_dir"] = args.functions_dir
+    servicer = DaftCoordinatorServicer(**kwargs)
     coordinator_pb2_grpc.add_DaftCoordinatorServicer_to_server(servicer, server)
 
     listen_addr = f"[::]:{args.port}"

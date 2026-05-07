@@ -16,10 +16,15 @@ logger = logging.getLogger(__name__)
 class DaftCoordinatorServicer(coordinator_pb2_grpc.DaftCoordinatorServicer):
     """Implements the DaftCoordinator gRPC service."""
 
+    _UNSET = object()
+
     def __init__(self, ray_address: str | None = None,
-                 functions_dir: str | None = None) -> None:
+                 functions_dir: str | None | object = _UNSET) -> None:
         self._ray_address = ray_address
-        self._registry = FunctionRegistry(persist_dir=functions_dir)
+        if functions_dir is self._UNSET:
+            self._registry = FunctionRegistry()  # uses default persist_dir
+        else:
+            self._registry = FunctionRegistry(persist_dir=functions_dir)
         self._registry.load_persisted()
         self._driver = DaftDriver(self._registry)
         self._init_ray(ray_address)
