@@ -85,8 +85,11 @@ def test_10m_map_batches():
 def test_max_result_rows():
     """Test 3: Exceeding max_result_rows returns error."""
     try:
-        # Set a very low limit temporarily
-        mysql_exec("SET GLOBAL daft_coordinator_max_result_rows = 100", fetch=False)
+        # Set a very low limit temporarily via ADMIN SET FRONTEND CONFIG
+        mysql_exec(
+            "ADMIN SET FRONTEND CONFIG (\"daft_coordinator_max_result_rows\" = \"100\")",
+            fetch=False,
+        )
         time.sleep(1)
 
         sql = ("SELECT map_batches('identity_transform') "
@@ -99,7 +102,10 @@ def test_max_result_rows():
             ok = "exceeds maximum" in str(e).lower() or "max" in str(e).lower()
             report("max_result_rows limit", ok, str(e)[:200])
     finally:
-        mysql_exec("SET GLOBAL daft_coordinator_max_result_rows = 10000000", fetch=False)
+        mysql_exec(
+            "ADMIN SET FRONTEND CONFIG (\"daft_coordinator_max_result_rows\" = \"20000000\")",
+            fetch=False,
+        )
 
 
 def test_explain():
