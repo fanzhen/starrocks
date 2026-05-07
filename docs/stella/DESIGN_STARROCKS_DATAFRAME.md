@@ -691,3 +691,126 @@ FE 路由采用 `StmtExecutor` 级别的 AST 拦截（Phase 17c 降级方案）�
 - Coordinator 通过 ADBC 连接 **FE 的** Arrow Flight SQL 端口（FE 代理到 BE），不直连 BE（BE 无 auth 处理）
 - `DaftQueryExecutor.buildArrowFlightEndpoint()` 使用 `Config.arrow_flight_port`（FE 的端口）构建 endpoint
 
+---
+
+## 12. 项目总结 — Phase 1 到 Phase 25
+
+### 12.1 总体状态
+
+**全部 25 个 Phase 完成，E2E 验证通过。** 从 Python DataFrame 客户端到 FE 服务端路由、Daft Coordinator sidecar、10M 行生产级流式执行，完整链路打通。
+
+### 12.2 各 Stage 完成状态
+
+| Stage | 范围 | Phase | E2E | 状态 |
+|-------|------|-------|-----|------|
+| **Stage 1** | DataFrame SQL 引擎 | 1-7 | 136 unit + 12 E2E | ✅ |
+| **Stage 2** | Daft on Ray POC | 8-9 | 8 E2E | ✅ |
+| **Stage 3** | Arrow Flight 数据通道 | 10-11 | 19 E2E | ✅ |
+| **Stage 4** | 完整 Daft 集成 + 自动路由 | 12-15 | 31 unit + 9 E2E | ✅ |
+| **Stage 5** | FE 路由 + Coordinator Sidecar | 16-20 | 37 E2E | ✅ |
+| **Phase 21** | 跨引擎优化 + Benchmark | 21a-c | 12 E2E | ✅ |
+| **Stage 6** | 生产化增强 | 22-25 | 15 E2E | ✅ |
+
+### 12.3 Phase 逐项清单
+
+| Phase | 名称 | 关键交付 | E2E 结果 |
+|-------|------|---------|---------|
+| 1 | 核心框架 + 基础查询 | Session / DataFrame / SQLCompiler / filter / select / show / to_pandas | 9/9 PASS |
+| 2 | 聚合 + 排序 + 分页 | group_by / agg / order_by / limit / 链式查询 | E2E PASS |
+| 3 | Join + 子查询 + Union | inner/left/right/full/cross join / union / alias | E2E PASS |
+| 4 | 高级表达式 + 函数库 | func.sum/avg/count / 日期函数 / 窗口函数 / CASE WHEN | E2E PASS |
+| 5 | StarRocks 专有特性 | match_phrase / with_bm25 / bitmap / 外表 catalog | E2E PASS |
+| 6 | 生产化 + 发布 | pip install / 错误处理 / 连接池 / 文档 | E2E PASS |
+| 7 | 向量函数映射 | approx_cosine_similarity / l2_distance | E2E PASS |
+| 8 | Daft 基础集成 | Ray init / to_daft / Daft DataFrame 互转 | 4/4 PASS |
+| 9 | map_batches 端到端管道 | PipelineExecutor 自动切分 SQL/Daft 段 / write_daft 写回 | 4/4 PASS |
+| 10 | Arrow Flight SQL 客户端 | ArrowFlightConnection / execute_to_arrow / 零拷贝传输 | E2E PASS |
+| 11 | 双通道切换 | Session 自动选择 MySQL / Arrow Flight / 回归全通过 | E2E PASS |
+| 12 | Ray 集群集成 | Ray runner / 资源配置 / 容错 | E2E PASS |
+| 13 | map_batches / Python UDF | MapBatches 逻辑节点 / PipelineExecutor 混合执行 | E2E PASS |
+| 14 | StarRocks ↔ Daft 数据桥梁 | Arrow 桥梁 / 10M 行 pipeline | E2E PASS |
+| 15 | 多模态类型系统 | 向量 / 图像 / 文本类型映射 | E2E PASS |
+| 16 | Coordinator Sidecar + gRPC | coordinator.proto / DaftDriver / gRPC server + CLI | 11 unit + 7 E2E PASS |
+| 17a | FE gRPC 客户端 | DaftCoordinatorClient.java / Config / SHOW PROC | 5/5 PASS |
+| 17b | FE map_batches 语法 | StarRocks.g4 扩展 / AST 节点 / Analyzer bypass | 5/5 PASS |
+| 17c | FE 路由执行 | DaftQueryExecutor / StmtExecutor 拦截 / 全链路 | 6/6 PASS |
+| 18 | 函数注册 DDL | ADMIN CREATE/SHOW/DROP DAFT FUNCTION | 7/7 PASS |
+| 19 | 直连数据通道 | ADBC direct read / Ray object store / Stream Load write-back | 6/6 PASS |
+| 20 | 全局优化 + 生产加固 | 重试 / Keep-Alive / 超时 / 最大行数限制 / 配置统一 | 7/7 PASS |
+| 21a | 跨引擎谓词下推 + 列裁剪 | FilterOp / ProjectionOp / LimitOp 下推到 Coordinator | 5/5 PASS |
+| 21b | 10M 行 Benchmark | identity 1.3x / filter 1.4x / coordinator < 1s | 4/4 PASS |
+| 21c | Coordinator 生命周期 | start/stop 脚本 / PID 管理 / --wait-fe | 3/3 PASS |
+| 22 | 函数注册持久化 | JSON 文件 / 重启恢复 / 无效模块跳过 | 4/4 PASS |
+| 23 | Stream Load 流式写回 | chunked CSV generator (8192 行/chunk) / 内存 2% | 3/3 PASS |
+| 24 | Python SDK 统一 | map_batches("str") → SQL 编译 → FE 路由 | 6/6 PASS |
+| 25 | FE 流式返回 | gRPC batch → MySQL packet 直发 / 10M 行 43.8s | 4/4 PASS |
+
+### 12.4 架构全貌
+
+```
+用户 Python 代码
+    │
+    ▼
+DataFrame API (惰性 plan 构建)
+    │
+    ├── 纯 SQL 路径:  SQLCompiler → MySQL/Arrow Flight → StarRocks MPP
+    │
+    ├── 本地 Daft 路径: map_batches(callable) → PipelineExecutor → Ray/Daft
+    │
+    └── FE 路由路径:  map_batches("func") → SQL 编译 → FE 拦截
+                          │
+                          ▼
+                     DaftQueryExecutor (AST 拦截)
+                          │
+                          ▼
+                     DaftCoordinatorClient (gRPC)
+                          │
+                          ▼
+                     Daft Coordinator Sidecar
+                       ├── Arrow Flight 读源数据
+                       ├── Daft on Ray 执行 UDF
+                       ├── gRPC 流式返回结果
+                       └── Stream Load 写回 StarRocks
+```
+
+### 12.5 关键技术决策
+
+| # | 决策 | 选择 | 理由 |
+|---|------|------|------|
+| 1 | SQL 编译方式 | 递归 plan tree → SQL | 支持任意嵌套，与 StarRocks 方言完全兼容 |
+| 2 | FE 拦截层级 | StmtExecutor AST 级 | Planner 层改动太侵入，AST 级可独立演进 |
+| 3 | 数据传输协议 | Arrow Flight SQL (ADBC) | 零拷贝、列式、比 MySQL 协议快 10x+ |
+| 4 | Coordinator 部署 | FE sidecar 进程 | 共享机器资源，gRPC 本地通信延迟 < 1ms |
+| 5 | 函数注册模式 | 注册 + 名称引用 | Closure 不可序列化到远端，名称引用是生产化必经之路 |
+| 6 | 结果集传输 | gRPC 流 → MySQL packet 直发 | FE 内存 = 1 batch（~4096 行），支持 10M+ 行 |
+| 7 | Stream Load 写回 | chunked transfer encoding | 内存从 2x 降到 2%，generator 流式上传 |
+
+### 12.6 性能基线
+
+| 场景 | 行数 | 耗时 | 对比直接 SQL |
+|------|------|------|------------|
+| identity map_batches | 10M | 43.8s | ~1.3x |
+| filter pushdown | 10M | — | ~1.4x |
+| Coordinator 启动 + 函数恢复 | — | < 4s | — |
+| Stream Load 写回 100K 行 | 100K | < 5s | — |
+
+### 12.7 文件清单
+
+**Python（28 个文件）**:
+- `python/starrocks/` — Session, DataFrame, Column, SQLCompiler, PipelineExecutor
+- `python/starrocks/coordinator/` — gRPC server, DaftDriver, FunctionRegistry, StreamLoadWriter, builtin_functions
+- `python/starrocks/plan/` — LogicalPlan nodes (TableScan, Filter, MapBatches, etc.)
+- `python/tests/verify_phase*.py` — 16 个 E2E 验证脚本
+
+**FE Java（8 个文件）**:
+- `DaftQueryExecutor.java` — AST 拦截 + 跨引擎下推 + 流式结果
+- `DaftCoordinatorClient.java` — gRPC 客户端 + 重试 + 流式 API
+- `StmtExecutor.java` — map_batches 拦截入口
+- `DDLStmtExecutor.java` — ADMIN CREATE/DROP DAFT FUNCTION
+- `ShowExecutor.java` — ADMIN SHOW DAFT FUNCTIONS
+- `Config.java` — daft_coordinator_* 配置项
+- `StarRocks.g4` — map_batches 语法扩展
+
+**Proto（1 个文件）**:
+- `python/starrocks/coordinator/proto/coordinator.proto` — gRPC 服务定义
+
